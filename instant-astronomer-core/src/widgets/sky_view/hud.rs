@@ -212,71 +212,157 @@ pub(super) fn paint_altitude_ladder(
 /// ribbon at the top showing both the current centre altitude and
 /// the nearest celestial body to the crosshair. Lets the user
 /// "aim" at a bright object and read what it is without tapping.
+/// Reticle radius in logical pixels. Anything painted inside this
+/// circle counts as "the user is aiming at it" and gets its name
+/// printed below.
+pub(super) const RETICLE_RADIUS: f64 = 16.0;
+
 pub(super) fn paint_centre_reticle(
     ctx: &mut dyn DrawCtx,
     font: Arc<Font>,
     w: f64,
     h: f64,
-    centre_alt: f64,
+    _centre_alt: f64,
     painted: &[PaintedBody],
 ) {
     let centre = Point::new(w / 2.0, h * 0.6);
 
-    let r = 8.0_f64;
-    ctx.set_stroke_color(Color::from_rgba8(255, 240, 180, 170));
-    ctx.set_line_width(1.0);
+    // Ring + tiny centre dot.
+    ctx.set_stroke_color(Color::from_rgba8(255, 240, 180, 180));
+    ctx.set_line_width(1.4);
     ctx.begin_path();
-    ctx.move_to(centre.x - r, centre.y);
-    ctx.line_to(centre.x - 2.0, centre.y);
-    ctx.move_to(centre.x + 2.0, centre.y);
-    ctx.line_to(centre.x + r, centre.y);
-    ctx.move_to(centre.x, centre.y - r);
-    ctx.line_to(centre.x, centre.y - 2.0);
-    ctx.move_to(centre.x, centre.y + 2.0);
-    ctx.line_to(centre.x, centre.y + r);
+    ctx.circle(centre.x, centre.y, RETICLE_RADIUS);
     ctx.stroke();
     ctx.set_fill_color(Color::from_rgba8(255, 240, 180, 220));
     ctx.begin_path();
     ctx.circle(centre.x, centre.y, 1.5);
     ctx.fill();
 
-    const MAX_LABEL_DIST: f64 = 60.0;
+    // Find the brightest body fully inside the reticle ring; ties
+    // broken toward the nearer body.
     let mut best: Option<(f64, &PaintedBody)> = None;
     for body in painted {
         let dx = body.pos.x - centre.x;
         let dy = body.pos.y - centre.y;
         let dist = (dx * dx + dy * dy).sqrt();
-        if dist > MAX_LABEL_DIST {
+        if dist > RETICLE_RADIUS {
             continue;
         }
-        let score = dist + (body.magnitude as f64) * 4.0;
+        let score = (body.magnitude as f64) + dist * 0.05;
         match &best {
             Some((best_score, _)) if score >= *best_score => {}
             _ => best = Some((score, body)),
         }
     }
 
-    let alt_label = format!("alt {:+.0}°", centre_alt.to_degrees());
-    let target_label = best.map(|(_, b)| format!("{}  ·  mag {:+.1}", b.name, b.magnitude));
+    let Some((_, body)) = best else {
+        return;
+    };
 
-    let ribbon_h = 28.0_f64;
-    let ribbon_y_top = h - 6.0;
-    let ribbon_y_bottom = ribbon_y_top - ribbon_h;
-    ctx.set_fill_color(Color::from_rgba8(0, 0, 0, 130));
-    ctx.begin_path();
-    ctx.rounded_rect(8.0, ribbon_y_bottom, w - 16.0, ribbon_h, 6.0);
-    ctx.fill();
-
+    // Paint the name immediately below the reticle so the eye can read
+    // it without moving — proximate to where the user is aiming.
     ctx.set_font(font);
-    ctx.set_font_size(12.0);
-    ctx.set_fill_color(Color::from_rgb8(220, 222, 240));
-    ctx.fill_text(&alt_label, 16.0, ribbon_y_bottom + 9.0);
+    let name_size = 13.0_f64;
+    let detail_size = 11.0_f64;
+    let pad = 6.0_f64;
+    let name = body.name.clone();
+    let mag_label = format!("mag {:+.1}", body.magnitude);
+    let approx = |s: &str, sz: f64| (s.chars().count() as f64) * sz * 0.6 + pad * 2.0;
+    let card_w = approx(&name, name_size).max(approx(&mag_label, detail_size));
+    let card_h = name_size + detail_size + pad * 2.0 + 4.0;
+    let card_x = (centre.x - card_w / 2.0).clamp(8.0, w - card_w - 8.0);
+    let card_top = centre.y - RETICLE_RADIUS - 4.0;
+    let card_y = (card_top - card_h).max(8.0);
 
-    if let Some(text) = target_label.as_deref() {
-        ctx.set_fill_color(Color::from_rgb8(255, 230, 150));
-        ctx.set_font_size(13.0);
-        let est_w = text.chars().count() as f64 * 7.0;
-        ctx.fill_text(text, w - est_w - 16.0, ribbon_y_bottom + 9.0);
+    ctx.set_fill_color(Color::from_rgba8(15, 20, 38, 220));
+    ctx.begin_path();
+    ctx.rounded_rect(card_x, card_y, card_w, card_h, 6.0);
+    ctx.fill();
+    ctx.set_stroke_color(Color::from_rgba8(255, 215, 90, 180));
+    ctx.set_line_width(1.0);
+    ctx.begin_path();
+    ctx.rounded_rect(card_x, card_y, card_w, card_h, 6.0);
+    ctx.stroke();
+
+    ctx.set_fill_color(Color::from_rgb8(255, 235, 150));
+    ctx.set_font_size(name_size);
+    let name_baseline = card_y + card_h - pad - name_size * 0.2;
+    ctx.fill_text(&name, card_x + pad, name_baseline);
+
+    ctx.set_fill_color(Color::from_rgb8(200, 205, 225));
+    ctx.set_font_size(detail_size);
+    let mag_baseline = card_y + pad - detail_size * 0.1;
+    ctx.fill_text(&mag_label, card_x + pad, mag_baseline);
+}
+
+/// Paint the projected `alt = 0` horizon line as a dim curve across
+/// the field of view. Sampled at every 2° of azimuth around the full
+/// horizon ring; pairs whose either endpoint is behind the camera are
+/// skipped, leaving only the visible arc.
+///
+/// When the camera is tilted up the line drops below the centre of
+/// the screen; when level it sits at the centre; when tilted down it
+/// rides above centre — giving the user a "you are above / below the
+/// horizon by this much" cue.
+pub(super) fn paint_alt_zero_line(
+    ctx: &mut dyn DrawCtx,
+    w: f64,
+    h: f64,
+    rot: &nalgebra::Matrix3<f64>,
+    center: Point,
+    focal_length: f64,
+) {
+    ctx.set_stroke_color(Color::from_rgba8(255, 200, 140, 70));
+    ctx.set_line_width(1.0);
+
+    // Skip everything below the painted ground band (paint_horizon_strip
+    // covers y=0..36) and above the top edge, so the line doesn't
+    // extend into UI surfaces.
+    let ground_h = 36.0;
+    let clip_y = |y: f64| -> bool { y >= ground_h && y <= h - 6.0 };
+
+    let mut prev: Option<Point> = None;
+    let mut prev_in_front = false;
+    let step = (2.0_f64).to_radians();
+    let mut az = 0.0_f64;
+    while az <= 2.0 * std::f64::consts::PI + step {
+        let hc = HorizontalCoords { alt: 0.0, az };
+        let v_cart = horizontal_to_cartesian(hc);
+        let v_rot = rot * v_cart;
+        let (x, y, z) = (v_rot.x, v_rot.y, v_rot.z);
+
+        let in_front = z > 0.02;
+        let proj = if in_front {
+            Some(Point::new(
+                center.x + (x / z) * focal_length,
+                center.y + (y / z) * focal_length,
+            ))
+        } else {
+            None
+        };
+
+        if let (Some(p), Some(q), true, true) = (prev, proj, prev_in_front, in_front) {
+            // Skip absurdly long segments that imply we crossed behind
+            // the camera between samples even though both samples
+            // claim z > 0 (large jump in screen space).
+            let dx = q.x - p.x;
+            let dy = q.y - p.y;
+            let len = (dx * dx + dy * dy).sqrt();
+            let in_view = (clip_y(p.y) || clip_y(q.y))
+                && p.x > -32.0
+                && p.x < w + 32.0
+                && q.x > -32.0
+                && q.x < w + 32.0;
+            if len < w.max(h) && in_view {
+                ctx.begin_path();
+                ctx.move_to(p.x, p.y);
+                ctx.line_to(q.x, q.y);
+                ctx.stroke();
+            }
+        }
+        prev = proj;
+        prev_in_front = in_front;
+        az += step;
     }
 }
 

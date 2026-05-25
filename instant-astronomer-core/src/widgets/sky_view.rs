@@ -495,6 +495,12 @@ impl Widget for SkyViewWidget {
         // labels (N / NE / E / …) slide along the strip based on the
         // user's current heading, matching the actual real-world
         // direction each label points at on the celestial sphere.
+        // Dim alt=0 horizon line projected across the sky — gives a
+        // visual cue for "how far above / below the horizon am I
+        // looking?" that the locked-level bottom strip can't convey on
+        // its own. Painted before the HUD strips so they sit on top.
+        hud::paint_alt_zero_line(ctx, w, h, &rot, center, focal_length);
+
         hud::paint_horizon_strip(ctx, Arc::clone(&self.font), w, h, &rot, center, focal_length);
 
         // Altitude ladder along the right edge — like an HUD pitch
@@ -505,11 +511,10 @@ impl Widget for SkyViewWidget {
         let centre_alt = hud::screen_centre_altitude(&rot);
         hud::paint_altitude_ladder(ctx, Arc::clone(&self.font), w, h, centre_alt);
 
-        // Centre reticle + nearest-body identifier — a tiny crosshair
-        // marks the screen centre, and the name of whatever celestial
-        // body is closest to it is printed just above. The user can
-        // simply "aim" the centre at the bright thing they're curious
-        // about and read the name without tapping.
+        // Centre reticle (circle) + name printed below it when a body
+        // is actually inside the ring. Lets the user "aim" the reticle
+        // at a bright object and read off what it is, reading just
+        // below where their eye already is.
         hud::paint_centre_reticle(ctx, Arc::clone(&self.font), w, h, centre_alt, &painted);
 
         // Selected-body info card. Drawn last so the panel sits above any

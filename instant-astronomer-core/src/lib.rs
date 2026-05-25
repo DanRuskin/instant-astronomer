@@ -130,6 +130,7 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
         platform,
         Rc::clone(&latitude),
         Rc::clone(&longitude),
+        Rc::clone(&timestamp_ms),
         Rc::clone(&yaw),
         Rc::clone(&calibration_yaw),
         Rc::clone(&show_constellations),
@@ -154,6 +155,7 @@ fn build_control_panel<P: AstronomerPlatform>(
     platform: P,
     latitude: Rc<Cell<f64>>,
     longitude: Rc<Cell<f64>>,
+    timestamp_ms: Rc<Cell<i64>>,
     yaw: Rc<Cell<f64>>,
     calibration_yaw: Rc<Cell<f64>>,
     show_constellations: Rc<Cell<bool>>,
@@ -199,39 +201,81 @@ fn build_control_panel<P: AstronomerPlatform>(
         .with_font_size(12.0)
     };
 
+    // Live clock showing both UTC and an approximate local time (solar
+    // time derived from longitude). The user wanted DST-correct legal
+    // time, which we don't have a tz database for; this approximation
+    // is good enough to confirm "yes, the app knows roughly where I am
+    // and what time it is".
+    let time_label = {
+        let ts = Rc::clone(&timestamp_ms);
+        let lng = Rc::clone(&longitude);
+        StatusText::new(Arc::clone(&font), move || format_clock_label(ts.get(), lng.get()))
+            .with_font_size(11.0)
+    };
+
     let row_1 = FlexRow::new()
         .with_gap(12.0)
         .add(Box::new(geo_button))
         .add(Box::new(calibrate_button))
         .add(Box::new(constellation_checkbox))
-        .add_flex(Box::new(coord_label), 1.0);
+        .add_flex(Box::new(coord_label), 1.0)
+        .add(Box::new(time_label));
+
+    // Shared "do the search now" closure so the Search button, Enter
+    // key, and live on_change all use exactly the same path. Without
+    // this the user reported "typing then hitting enter is not
+    // searching" -- the field only fired on the button.
+    let run_search: Rc<dyn Fn(&str)> = {
+        let lat = Rc::clone(&latitude);
+        let lng = Rc::clone(&longitude);
+        let status = Rc::clone(&search_status);
+        Rc::new(move |query: &str| {
+            let q = query.trim();
+            if q.is_empty() {
+                *status.borrow_mut() = String::from("Type a city to search");
+                return;
+            }
+            let matches = cities::search_cities(q);
+            if let Some(city) = matches.first() {
+                lat.set(city.latitude);
+                lng.set(city.longitude);
+                *status.borrow_mut() = if matches.len() > 1 {
+                    format!("{}, {}  (+{} more)", city.name, city.country_code, matches.len() - 1)
+                } else {
+                    format!("{}, {}", city.name, city.country_code)
+                };
+            } else {
+                *status.borrow_mut() = format!("\"{q}\" not found in built-in catalog");
+            }
+            agg_gui::animation::request_draw();
+        })
+    };
 
     let search_field = {
         let text = Rc::clone(&search_text);
+        let search_on_change = Rc::clone(&run_search);
+        let search_on_enter = Rc::clone(&run_search);
         TextField::new(Arc::clone(&font))
-            .with_placeholder("Search city (e.g. London, Tokyo, Paris)...")
+            .with_placeholder("Search city (e.g. Irvine, London, Tokyo)...")
             .on_change(move |s| {
                 *text.borrow_mut() = s.to_string();
+                // Live search-as-you-type: cheap (~150-entry linear
+                // scan) and gives the user immediate feedback rather
+                // than the previous "type, then click Search, then
+                // wait" round-trip.
+                (search_on_change)(s);
+            })
+            .on_enter(move |s| {
+                (search_on_enter)(s);
             })
     };
 
     let search_button = {
-        let lat = Rc::clone(&latitude);
-        let lng = Rc::clone(&longitude);
         let text = Rc::clone(&search_text);
-        let status = Rc::clone(&search_status);
+        let click_search = Rc::clone(&run_search);
         Button::new("Search", Arc::clone(&font)).on_click(move || {
             let query = text.borrow().clone();
-            let matches = cities::search_cities(&query);
-            if let Some(city) = matches.first() {
-                lat.set(city.latitude);
-                lng.set(city.longitude);
-                *status.borrow_mut() =
-                    format!("Located: {}, {}", city.name, city.country_code);
-            } else {
-                *status.borrow_mut() = String::from("City not found");
-            }
-            agg_gui::animation::request_draw();
+            (click_search)(&query);
         })
     };
 
@@ -266,4 +310,29 @@ pub fn current_unix_ms() -> i64 {
         .duration_since(web_time::SystemTime::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Build the "UTC HH:MM · local HH:MM" status string shown in the
+/// control panel so the user can verify the app has them located in
+/// the right place at the right time.
+///
+/// The "local" half is **solar time** — UTC offset by `longitude /
+/// 15 hours`. That's not the user's legal-civil time (which would
+/// require a tz database to look up the offset from coords + the DST
+/// rules) but it's close enough that someone in California will see
+/// roughly Pacific time, someone in London will see roughly UK time,
+/// etc. Worth ~30 minutes of error vs. the alternative of bundling
+/// `tzf-rs` (~5 MB of polygon data) into the WASM blob.
+fn format_clock_label(timestamp_ms: i64, longitude_deg: f64) -> String {
+    let utc_h = ((timestamp_ms / 3_600_000) % 24 + 24) % 24;
+    let utc_m = ((timestamp_ms / 60_000) % 60 + 60) % 60;
+    // Solar local time = UTC + longitude/15 hours, wrapped to [0, 24).
+    let solar_offset_ms = (longitude_deg * 4.0 * 60.0 * 1000.0) as i64; // 4 min per °
+    let local_ms = timestamp_ms + solar_offset_ms;
+    let l_h = ((local_ms / 3_600_000) % 24 + 24) % 24;
+    let l_m = ((local_ms / 60_000) % 60 + 60) % 60;
+    format!(
+        "UTC {:02}:{:02} · solar {:02}:{:02}",
+        utc_h, utc_m, l_h, l_m
+    )
 }
