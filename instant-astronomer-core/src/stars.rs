@@ -144,22 +144,193 @@ fn parse_extended_catalog(csv: &str) -> Vec<Star> {
 /// constellations from `celestial_data`; this list seeds the renderer with
 /// Orion + Ursa Major so the constellation overlay is testable today.
 pub const CONSTELLATION_LINES: &[ConstellationLine] = &[
-    // Orion
-    ConstellationLine { from_id:  9, to_id: 17, constellation_name: "Orion" },      // Betelgeuse → Bellatrix
-    ConstellationLine { from_id: 17, to_id: 18, constellation_name: "Orion" },      // Bellatrix → Alnilam (belt)
-    ConstellationLine { from_id:  9, to_id: 18, constellation_name: "Orion" },      // Betelgeuse → Alnilam
-    ConstellationLine { from_id: 18, to_id:  7, constellation_name: "Orion" },      // Alnilam → Rigel
-    ConstellationLine { from_id: 18, to_id: 19, constellation_name: "Orion" },      // Alnilam → Saiph
-    ConstellationLine { from_id:  7, to_id: 19, constellation_name: "Orion" },      // Rigel → Saiph
-    // Ursa Major (Big Dipper)
-    ConstellationLine { from_id: 20, to_id: 21, constellation_name: "Ursa Major" }, // Dubhe → Merak (pointer)
-    ConstellationLine { from_id: 21, to_id: 22, constellation_name: "Ursa Major" }, // Merak → Phecda
-    ConstellationLine { from_id: 22, to_id: 23, constellation_name: "Ursa Major" }, // Phecda → Megrez
-    ConstellationLine { from_id: 23, to_id: 20, constellation_name: "Ursa Major" }, // Megrez → Dubhe (bowl close)
-    ConstellationLine { from_id: 23, to_id: 24, constellation_name: "Ursa Major" }, // Megrez → Alioth
-    ConstellationLine { from_id: 24, to_id: 25, constellation_name: "Ursa Major" }, // Alioth → Mizar
-    ConstellationLine { from_id: 25, to_id: 26, constellation_name: "Ursa Major" }, // Mizar → Alkaid (handle)
+    // ── Orion ──────────────────────────────────────────────────────────────
+    ConstellationLine { from_id:  9, to_id: 17, constellation_name: "Orion" },          // Betelgeuse → Bellatrix
+    ConstellationLine { from_id: 17, to_id: 18, constellation_name: "Orion" },          // Bellatrix → Alnilam (belt)
+    ConstellationLine { from_id:  9, to_id: 18, constellation_name: "Orion" },          // Betelgeuse → Alnilam
+    ConstellationLine { from_id: 18, to_id:  7, constellation_name: "Orion" },          // Alnilam → Rigel
+    ConstellationLine { from_id: 18, to_id: 19, constellation_name: "Orion" },          // Alnilam → Saiph
+    ConstellationLine { from_id:  7, to_id: 19, constellation_name: "Orion" },          // Rigel → Saiph
+    // ── Ursa Major (Big Dipper) ────────────────────────────────────────────
+    ConstellationLine { from_id: 20, to_id: 21, constellation_name: "Ursa Major" },     // Dubhe → Merak
+    ConstellationLine { from_id: 21, to_id: 22, constellation_name: "Ursa Major" },     // Merak → Phecda
+    ConstellationLine { from_id: 22, to_id: 23, constellation_name: "Ursa Major" },     // Phecda → Megrez
+    ConstellationLine { from_id: 23, to_id: 20, constellation_name: "Ursa Major" },     // Megrez → Dubhe (bowl close)
+    ConstellationLine { from_id: 23, to_id: 24, constellation_name: "Ursa Major" },     // Megrez → Alioth
+    ConstellationLine { from_id: 24, to_id: 25, constellation_name: "Ursa Major" },     // Alioth → Mizar
+    ConstellationLine { from_id: 25, to_id: 26, constellation_name: "Ursa Major" },     // Mizar → Alkaid (handle)
+    // ── Ursa Minor (Little Dipper) ─────────────────────────────────────────
+    ConstellationLine { from_id:   1, to_id: 102, constellation_name: "Ursa Minor" },   // Polaris → Yildun
+    ConstellationLine { from_id: 102, to_id: 100, constellation_name: "Ursa Minor" },   // Yildun → Kochab
+    ConstellationLine { from_id: 100, to_id: 101, constellation_name: "Ursa Minor" },   // Kochab → Pherkad
+    // ── Cassiopeia (W) ─────────────────────────────────────────────────────
+    ConstellationLine { from_id: 104, to_id: 103, constellation_name: "Cassiopeia" },   // Caph → Schedar
+    ConstellationLine { from_id: 103, to_id: 105, constellation_name: "Cassiopeia" },   // Schedar → Gamma Cas
+    ConstellationLine { from_id: 105, to_id: 106, constellation_name: "Cassiopeia" },   // Gamma Cas → Ruchbah
+    ConstellationLine { from_id: 106, to_id: 107, constellation_name: "Cassiopeia" },   // Ruchbah → Segin
+    // ── Cepheus ────────────────────────────────────────────────────────────
+    ConstellationLine { from_id: 186, to_id: 187, constellation_name: "Cepheus" },      // Alderamin → Alfirk
+    ConstellationLine { from_id: 187, to_id: 188, constellation_name: "Cepheus" },      // Alfirk → Errai
+    // ── Draco (winding) ────────────────────────────────────────────────────
+    ConstellationLine { from_id: 181, to_id: 182, constellation_name: "Draco" },        // Eltanin → Rastaban
+    ConstellationLine { from_id: 182, to_id: 183, constellation_name: "Draco" },        // Rastaban → Altais
+    ConstellationLine { from_id: 183, to_id: 185, constellation_name: "Draco" },        // Altais → Edasich
+    ConstellationLine { from_id: 185, to_id: 184, constellation_name: "Draco" },        // Edasich → Thuban
+    // ── Cygnus (Northern Cross) ────────────────────────────────────────────
+    ConstellationLine { from_id:  15, to_id: 191, constellation_name: "Cygnus" },       // Deneb → Sadr (spine)
+    ConstellationLine { from_id: 191, to_id: 193, constellation_name: "Cygnus" },       // Sadr → Albireo (head)
+    ConstellationLine { from_id: 191, to_id: 192, constellation_name: "Cygnus" },       // Sadr → Gienah (wing)
+    ConstellationLine { from_id: 191, to_id: 194, constellation_name: "Cygnus" },       // Sadr → Aljanah (wing)
+    // ── Lyra ───────────────────────────────────────────────────────────────
+    ConstellationLine { from_id:   5, to_id: 189, constellation_name: "Lyra" },         // Vega → Sheliak
+    ConstellationLine { from_id: 189, to_id: 190, constellation_name: "Lyra" },         // Sheliak → Sulafat
+    ConstellationLine { from_id: 190, to_id:   5, constellation_name: "Lyra" },         // Sulafat → Vega (close triangle)
+    // ── Aquila ─────────────────────────────────────────────────────────────
+    ConstellationLine { from_id:  10, to_id: 195, constellation_name: "Aquila" },       // Altair → Tarazed
+    ConstellationLine { from_id:  10, to_id: 196, constellation_name: "Aquila" },       // Altair → Alshain
+    // ── Bootes (kite) ──────────────────────────────────────────────────────
+    ConstellationLine { from_id:   4, to_id: 167, constellation_name: "Bootes" },       // Arcturus → Muphrid
+    ConstellationLine { from_id:   4, to_id: 166, constellation_name: "Bootes" },       // Arcturus → Izar
+    ConstellationLine { from_id: 166, to_id: 169, constellation_name: "Bootes" },       // Izar → Nekkar
+    ConstellationLine { from_id: 169, to_id: 168, constellation_name: "Bootes" },       // Nekkar → Seginus
+    ConstellationLine { from_id: 168, to_id: 167, constellation_name: "Bootes" },       // Seginus → Muphrid
+    // ── Corona Borealis ────────────────────────────────────────────────────
+    ConstellationLine { from_id: 170, to_id: 171, constellation_name: "Corona Borealis" }, // Alphecca → Nusakan
+    // ── Hercules (rough keystone hint) ─────────────────────────────────────
+    ConstellationLine { from_id: 172, to_id: 173, constellation_name: "Hercules" },     // Kornephoros → Rasalgethi
+    ConstellationLine { from_id: 172, to_id: 174, constellation_name: "Hercules" },     // Kornephoros → Sarin
+    // ── Andromeda ──────────────────────────────────────────────────────────
+    ConstellationLine { from_id: 108, to_id: 109, constellation_name: "Andromeda" },    // Alpheratz → Mirach
+    ConstellationLine { from_id: 109, to_id: 110, constellation_name: "Andromeda" },    // Mirach → Almach
+    // ── Pegasus (Great Square + Enif) ──────────────────────────────────────
+    ConstellationLine { from_id: 108, to_id: 113, constellation_name: "Pegasus" },      // Alpheratz → Algenib
+    ConstellationLine { from_id: 113, to_id: 111, constellation_name: "Pegasus" },      // Algenib → Markab
+    ConstellationLine { from_id: 111, to_id: 112, constellation_name: "Pegasus" },      // Markab → Scheat
+    ConstellationLine { from_id: 112, to_id: 108, constellation_name: "Pegasus" },      // Scheat → Alpheratz (close square)
+    ConstellationLine { from_id: 111, to_id: 114, constellation_name: "Pegasus" },      // Markab → Enif (nose)
+    // ── Perseus ────────────────────────────────────────────────────────────
+    ConstellationLine { from_id: 116, to_id: 117, constellation_name: "Perseus" },      // Mirfak → Algol
+    ConstellationLine { from_id: 116, to_id: 118, constellation_name: "Perseus" },      // Mirfak → Atik
+    // ── Auriga (pentagon) ──────────────────────────────────────────────────
+    ConstellationLine { from_id:   6, to_id: 119, constellation_name: "Auriga" },       // Capella → Menkalinan
+    ConstellationLine { from_id: 119, to_id: 143, constellation_name: "Auriga" },       // Menkalinan → Elnath (shared w/ Taurus)
+    ConstellationLine { from_id: 143, to_id: 120, constellation_name: "Auriga" },       // Elnath → Mahasim
+    ConstellationLine { from_id: 120, to_id: 121, constellation_name: "Auriga" },       // Mahasim → Almaaz
+    ConstellationLine { from_id: 121, to_id:   6, constellation_name: "Auriga" },       // Almaaz → Capella
+    // ── Canis Major (Sirius leads, then Wezen + Adhara triangle) ───────────
+    ConstellationLine { from_id: 130, to_id:   2, constellation_name: "Canis Major" },  // Mirzam → Sirius
+    ConstellationLine { from_id:   2, to_id: 128, constellation_name: "Canis Major" },  // Sirius → Adhara
+    ConstellationLine { from_id: 128, to_id: 129, constellation_name: "Canis Major" },  // Adhara → Wezen
+    ConstellationLine { from_id: 129, to_id: 131, constellation_name: "Canis Major" },  // Wezen → Aludra
+    ConstellationLine { from_id: 128, to_id: 132, constellation_name: "Canis Major" },  // Adhara → Furud
+    // ── Canis Minor ────────────────────────────────────────────────────────
+    ConstellationLine { from_id:   8, to_id: 133, constellation_name: "Canis Minor" },  // Procyon → Gomeisa
+    // ── Lepus (the Hare) ───────────────────────────────────────────────────
+    ConstellationLine { from_id: 137, to_id: 138, constellation_name: "Lepus" },        // Arneb → Nihal
+    // ── Cetus ──────────────────────────────────────────────────────────────
+    ConstellationLine { from_id: 149, to_id: 152, constellation_name: "Cetus" },        // Diphda → Baten Kaitos
+    ConstellationLine { from_id: 152, to_id: 151, constellation_name: "Cetus" },        // Baten Kaitos → Kaffaljidhma
+    ConstellationLine { from_id: 151, to_id: 150, constellation_name: "Cetus" },        // Kaffaljidhma → Menkar
+    // ── Crux (Southern Cross) ──────────────────────────────────────────────
+    ConstellationLine { from_id: 240, to_id: 242, constellation_name: "Crux" },         // Acrux → Gacrux
+    ConstellationLine { from_id: 241, to_id: 243, constellation_name: "Crux" },         // Mimosa → Imai
+    // ── Centaurus (α/β missing from catalog; minimal asterism) ─────────────
+    ConstellationLine { from_id: 237, to_id: 239, constellation_name: "Centaurus" },    // Hadar → Muhlifain
+    ConstellationLine { from_id: 239, to_id: 238, constellation_name: "Centaurus" },    // Muhlifain → Menkent
+    // ── Ophiuchus (13th sun-transit; not part of tropical zodiac) ──────────
+    ConstellationLine { from_id: 175, to_id: 176, constellation_name: "Ophiuchus" },    // Rasalhague → Cebalrai
+    ConstellationLine { from_id: 175, to_id: 178, constellation_name: "Ophiuchus" },    // Rasalhague → Yed Prior
+    ConstellationLine { from_id: 178, to_id: 179, constellation_name: "Ophiuchus" },    // Yed Prior → Yed Posterior
+    ConstellationLine { from_id: 179, to_id: 177, constellation_name: "Ophiuchus" },    // Yed Posterior → Sabik
+    ConstellationLine { from_id: 177, to_id: 176, constellation_name: "Ophiuchus" },    // Sabik → Cebalrai
+
+    // ═════════════════════════════════════════════════════════════════════
+    // Zodiac constellations — see `zodiac_date_range` for tropical dates.
+    // ═════════════════════════════════════════════════════════════════════
+    // ── Aries ──────────────────────────────────────────────────────────────
+    ConstellationLine { from_id: 153, to_id: 154, constellation_name: "Aries" },        // Hamal → Sheratan
+    ConstellationLine { from_id: 154, to_id: 155, constellation_name: "Aries" },        // Sheratan → Mesarthim
+    // ── Taurus (simplified: horn + Pleiades direction) ─────────────────────
+    ConstellationLine { from_id: 143, to_id:  11, constellation_name: "Taurus" },       // Elnath → Aldebaran
+    ConstellationLine { from_id:  11, to_id: 144, constellation_name: "Taurus" },       // Aldebaran → Alcyone (Pleiades)
+    // ── Gemini (twins) ─────────────────────────────────────────────────────
+    ConstellationLine { from_id:  14, to_id: 122, constellation_name: "Gemini" },       // Pollux → Castor (heads)
+    ConstellationLine { from_id: 122, to_id: 124, constellation_name: "Gemini" },       // Castor → Mebsuta
+    ConstellationLine { from_id: 124, to_id: 127, constellation_name: "Gemini" },       // Mebsuta → Tejat
+    ConstellationLine { from_id: 127, to_id: 126, constellation_name: "Gemini" },       // Tejat → Propus
+    ConstellationLine { from_id:  14, to_id: 125, constellation_name: "Gemini" },       // Pollux → Wasat
+    ConstellationLine { from_id: 125, to_id: 123, constellation_name: "Gemini" },       // Wasat → Alhena
+    // ── Cancer (faint; sparse asterism with what we have) ──────────────────
+    ConstellationLine { from_id: 227, to_id: 226, constellation_name: "Cancer" },       // Asellus Australis → Acubens
+    ConstellationLine { from_id: 227, to_id: 228, constellation_name: "Cancer" },       // Asellus Australis → Tarf
+    // ── Leo ────────────────────────────────────────────────────────────────
+    ConstellationLine { from_id: 219, to_id: 221, constellation_name: "Leo" },          // Regulus → Algieba
+    ConstellationLine { from_id: 221, to_id: 222, constellation_name: "Leo" },          // Algieba → Zosma
+    ConstellationLine { from_id: 222, to_id: 220, constellation_name: "Leo" },          // Zosma → Denebola
+    ConstellationLine { from_id: 220, to_id: 223, constellation_name: "Leo" },          // Denebola → Chertan
+    ConstellationLine { from_id: 223, to_id: 219, constellation_name: "Leo" },          // Chertan → Regulus
+    // ── Virgo ──────────────────────────────────────────────────────────────
+    ConstellationLine { from_id:  12, to_id: 216, constellation_name: "Virgo" },        // Spica → Heze
+    ConstellationLine { from_id: 216, to_id: 214, constellation_name: "Virgo" },        // Heze → Porrima
+    ConstellationLine { from_id: 214, to_id: 217, constellation_name: "Virgo" },        // Porrima → Auva
+    ConstellationLine { from_id: 217, to_id: 215, constellation_name: "Virgo" },        // Auva → Vindemiatrix
+    ConstellationLine { from_id: 214, to_id: 218, constellation_name: "Virgo" },        // Porrima → Zavijava
+    // ── Libra ──────────────────────────────────────────────────────────────
+    ConstellationLine { from_id: 212, to_id: 213, constellation_name: "Libra" },        // Zubeneschamali → Zubenelgenubi
+    // ── Scorpius (the famous curve) ────────────────────────────────────────
+    ConstellationLine { from_id: 208, to_id: 206, constellation_name: "Scorpius" },     // Acrab → Dschubba
+    ConstellationLine { from_id: 206, to_id:  13, constellation_name: "Scorpius" },     // Dschubba → Antares
+    ConstellationLine { from_id:  13, to_id: 211, constellation_name: "Scorpius" },     // Antares → Paikauhale
+    ConstellationLine { from_id: 211, to_id: 207, constellation_name: "Scorpius" },     // Paikauhale → Larawag
+    ConstellationLine { from_id: 207, to_id: 210, constellation_name: "Scorpius" },     // Larawag → Girtab
+    ConstellationLine { from_id: 210, to_id: 205, constellation_name: "Scorpius" },     // Girtab → Sargas
+    ConstellationLine { from_id: 205, to_id: 204, constellation_name: "Scorpius" },     // Sargas → Shaula (tail)
+    ConstellationLine { from_id: 204, to_id: 209, constellation_name: "Scorpius" },     // Shaula → Lesath (sting)
+    // ── Sagittarius (the Teapot) ───────────────────────────────────────────
+    ConstellationLine { from_id: 201, to_id: 200, constellation_name: "Sagittarius" },  // Kaus Borealis → Kaus Media
+    ConstellationLine { from_id: 200, to_id: 197, constellation_name: "Sagittarius" },  // Kaus Media → Kaus Australis
+    ConstellationLine { from_id: 197, to_id: 199, constellation_name: "Sagittarius" },  // Kaus Australis → Ascella
+    ConstellationLine { from_id: 199, to_id: 198, constellation_name: "Sagittarius" },  // Ascella → Nunki
+    ConstellationLine { from_id: 198, to_id: 201, constellation_name: "Sagittarius" },  // Nunki → Kaus Borealis (close lid)
+    ConstellationLine { from_id: 200, to_id: 202, constellation_name: "Sagittarius" },  // Kaus Media → Alnasl (spout)
+    // ── Capricornus ────────────────────────────────────────────────────────
+    ConstellationLine { from_id: 161, to_id: 162, constellation_name: "Capricornus" },  // Dabih → Nashira
+    ConstellationLine { from_id: 162, to_id: 160, constellation_name: "Capricornus" },  // Nashira → Deneb Algedi
+    // ── Aquarius ───────────────────────────────────────────────────────────
+    ConstellationLine { from_id: 158, to_id: 157, constellation_name: "Aquarius" },     // Sadalmelik → Sadalsuud
+    ConstellationLine { from_id: 157, to_id: 159, constellation_name: "Aquarius" },     // Sadalsuud → Skat
+    // ── Pisces — only Alpherg in our catalog, no asterism yet ──────────────
 ];
+
+/// Western tropical-zodiac date range for the 12 standard signs.
+///
+/// Returns the **calendar** dates the Sun nominally crosses each sign in
+/// western astrology — these are *tropical* (anchored to the vernal
+/// equinox) and don't match the actual astronomical position of the Sun
+/// in the constellation any more, because precession has shifted the
+/// constellation boundaries ~30° over the past two millennia. Most
+/// pop-culture references to "your sign" use these tropical dates, so
+/// they're what we surface in the info card.
+///
+/// Ophiuchus is intentionally omitted: although the Sun does transit it,
+/// it's not one of the 12 tropical signs.
+pub fn zodiac_date_range(constellation_name: &str) -> Option<&'static str> {
+    match constellation_name {
+        "Aries"       => Some("Mar 21 – Apr 19"),
+        "Taurus"      => Some("Apr 20 – May 20"),
+        "Gemini"      => Some("May 21 – Jun 20"),
+        "Cancer"      => Some("Jun 21 – Jul 22"),
+        "Leo"         => Some("Jul 23 – Aug 22"),
+        "Virgo"       => Some("Aug 23 – Sep 22"),
+        "Libra"       => Some("Sep 23 – Oct 22"),
+        "Scorpius"    => Some("Oct 23 – Nov 21"),
+        "Sagittarius" => Some("Nov 22 – Dec 21"),
+        "Capricornus" => Some("Dec 22 – Jan 19"),
+        "Aquarius"    => Some("Jan 20 – Feb 18"),
+        "Pisces"      => Some("Feb 19 – Mar 20"),
+        _ => None,
+    }
+}
 
 /// Approximate Keplerian + Meeus positions for the visible Solar System
 /// bodies at `timestamp_ms` (Unix milliseconds, UTC). Outputs are J2000.0
@@ -392,6 +563,39 @@ mod tests {
         );
     }
 
+    /// All 12 tropical-zodiac signs resolve to a date range; non-zodiac
+    /// constellations resolve to None. Pins the names too — the
+    /// constellation table is keyed by exact name match.
+    #[test]
+    fn zodiac_date_ranges_cover_twelve_signs() {
+        let signs = [
+            "Aries",
+            "Taurus",
+            "Gemini",
+            "Cancer",
+            "Leo",
+            "Virgo",
+            "Libra",
+            "Scorpius",
+            "Sagittarius",
+            "Capricornus",
+            "Aquarius",
+            "Pisces",
+        ];
+        for s in signs {
+            assert!(
+                zodiac_date_range(s).is_some(),
+                "expected zodiac date range for {s}"
+            );
+        }
+        // Non-zodiac sanity check.
+        assert!(zodiac_date_range("Orion").is_none());
+        assert!(zodiac_date_range("Cassiopeia").is_none());
+        // Ophiuchus is intentionally not part of the tropical zodiac
+        // even though the Sun transits it.
+        assert!(zodiac_date_range("Ophiuchus").is_none());
+    }
+
     /// All 7 named bodies must be present so the sky_view rendering doesn't
     /// silently lose Venus etc. if calculate_* gets refactored.
     #[test]
@@ -408,9 +612,10 @@ mod tests {
 
     /// Sanity-check the parsed extended catalog: it must populate, all
     /// rows must parse (no silent skips), every star must have a unique
-    /// ID, magnitudes/coordinates must be physically sensible, and the
-    /// seeded constellation-line IDs (1..=26) must still resolve in
-    /// `BRIGHTEST_STARS` so the asterism overlay can't quietly break.
+    /// ID, magnitudes/coordinates must be physically sensible, and
+    /// every constellation-line endpoint must resolve in the full
+    /// `all_stars()` set so the asterism overlay can't quietly break
+    /// when a line references a star ID that fell out of the catalog.
     #[test]
     fn extended_catalog_parses_and_is_consistent() {
         let stars = all_stars();
@@ -425,17 +630,18 @@ mod tests {
         let before = ids.len();
         ids.dedup();
         assert_eq!(before, ids.len(), "duplicate star IDs in combined catalog");
-        // Constellation-line endpoints all live in 1..=26 — must still
-        // be findable.
+        // Every line endpoint must resolve in the combined catalog,
+        // not just BRIGHTEST_STARS — sky_view looks them up via
+        // `all_stars()` so any orphan ID would paint nothing.
         for line in CONSTELLATION_LINES {
             assert!(
-                BRIGHTEST_STARS.iter().any(|s| s.id == line.from_id),
+                stars.iter().any(|s| s.id == line.from_id),
                 "missing from_id {} for {}",
                 line.from_id,
                 line.constellation_name
             );
             assert!(
-                BRIGHTEST_STARS.iter().any(|s| s.id == line.to_id),
+                stars.iter().any(|s| s.id == line.to_id),
                 "missing to_id {} for {}",
                 line.to_id,
                 line.constellation_name

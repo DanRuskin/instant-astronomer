@@ -18,7 +18,9 @@ mod hud;
 use crate::math::{
     equatorial_to_horizontal, horizontal_to_cartesian, HorizontalCoords,
 };
-use crate::stars::{all_stars, calculate_solar_system_bodies, BRIGHTEST_STARS, CONSTELLATION_LINES};
+use crate::stars::{
+    all_stars, calculate_solar_system_bodies, zodiac_date_range, CONSTELLATION_LINES,
+};
 use nalgebra::{UnitQuaternion, Vector3};
 
 use agg_gui::color::Color;
@@ -66,6 +68,22 @@ pub(crate) struct Selection {
     pub detail: Option<String>,
 }
 
+/// A constellation line segment in screen coordinates after projection.
+/// Cached each frame so a tap that misses every body can still resolve
+/// to "you tapped the Cygnus spine" by checking distance to nearby
+/// segments.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PaintedSegment {
+    pub constellation_name: &'static str,
+    pub p0: Point,
+    pub p1: Point,
+}
+
+/// Tap radius for hitting a constellation line. Tighter than
+/// [`TAP_HIT_RADIUS`] so a body close to a line still wins; a tap
+/// that misses every body but is on the line itself still resolves.
+const LINE_HIT_RADIUS: f64 = 12.0;
+
 /// Sky viewport widget — paints stars, constellations, and Solar System
 /// bodies into the current `DrawCtx`.
 pub struct SkyViewWidget {
@@ -95,6 +113,11 @@ pub struct SkyViewWidget {
     /// Latest cache of celestial bodies projected in the previous paint —
     /// the input to tap hit-testing.
     painted_bodies: RefCell<Vec<PaintedBody>>,
+    /// Latest cache of projected constellation line segments. Consulted
+    /// by tap hit-testing after `painted_bodies` fails so the user can
+    /// tap a constellation line itself to see its name + zodiac date
+    /// range (when applicable).
+    painted_lines: RefCell<Vec<PaintedSegment>>,
     /// Body the user most recently tapped on. Renders as an info card.
     selected: Option<Selection>,
 }
@@ -132,6 +155,7 @@ impl SkyViewWidget {
             show_constellations,
             down: None,
             painted_bodies: RefCell::new(Vec::new()),
+            painted_lines: RefCell::new(Vec::new()),
             selected: None,
         }
     }
@@ -140,6 +164,12 @@ impl SkyViewWidget {
     /// closest hit within [`TAP_HIT_RADIUS`]; on ties (e.g. an overlapping
     /// planet + bright star), prefer the brighter body so taps on Venus
     /// don't get swallowed by a fainter background star.
+    ///
+    /// If no body is within reach we fall through to a second pass that
+    /// hit-tests constellation line segments — taps on the empty space
+    /// between two stars in a constellation should still resolve to
+    /// "this is Cygnus" (with the zodiac date range for the 12
+    /// tropical signs).
     fn hit_test_tap(&self, tap_pos: Point) -> Option<PaintedBody> {
         let bodies = self.painted_bodies.borrow();
         let mut best: Option<(f64, PaintedBody)> = None;
@@ -158,7 +188,41 @@ impl SkyViewWidget {
                 _ => best = Some((score, body.clone())),
             }
         }
-        best.map(|(_, b)| b)
+        if let Some((_, b)) = best {
+            return Some(b);
+        }
+
+        // Second pass: constellation line segments. Distance from tap
+        // to each segment; closest within LINE_HIT_RADIUS wins. We
+        // anchor the info-card position at the closest point ON the
+        // segment so the card pops up where the tap actually landed
+        // on the line, not at one of the endpoint stars.
+        let lines = self.painted_lines.borrow();
+        let mut best_line: Option<(f64, &PaintedSegment, Point)> = None;
+        for seg in lines.iter() {
+            let (dist, closest) = point_to_segment_distance(tap_pos, seg.p0, seg.p1);
+            if dist > LINE_HIT_RADIUS {
+                continue;
+            }
+            match best_line {
+                Some((best_d, _, _)) if dist >= best_d => {}
+                _ => best_line = Some((dist, seg, closest)),
+            }
+        }
+        best_line.map(|(_, seg, closest)| {
+            let detail = match zodiac_date_range(seg.constellation_name) {
+                Some(range) => format!("Constellation · Zodiac · {range}"),
+                None => String::from("Constellation"),
+            };
+            PaintedBody {
+                name: seg.constellation_name.to_string(),
+                pos: closest,
+                // Constellations don't have a meaningful magnitude;
+                // use a sentinel that sorts after everything else.
+                magnitude: f32::INFINITY,
+                detail: Some(detail),
+            }
+        })
     }
 
     /// Project a horizontal-frame coordinate through the device orientation
@@ -212,6 +276,25 @@ impl SkyViewWidget {
         ctx.set_font_size(size);
         ctx.fill_text(text, p.x, p.y);
     }
+}
+
+/// Shortest distance from point `p` to the line segment `a → b`, plus
+/// the closest point on the segment. Used by [`SkyViewWidget::hit_test_tap`]
+/// to resolve taps on constellation line segments.
+fn point_to_segment_distance(p: Point, a: Point, b: Point) -> (f64, Point) {
+    let abx = b.x - a.x;
+    let aby = b.y - a.y;
+    let len_sq = abx * abx + aby * aby;
+    if len_sq < 1e-9 {
+        let dx = p.x - a.x;
+        let dy = p.y - a.y;
+        return ((dx * dx + dy * dy).sqrt(), a);
+    }
+    let t = (((p.x - a.x) * abx + (p.y - a.y) * aby) / len_sq).clamp(0.0, 1.0);
+    let closest = Point::new(a.x + t * abx, a.y + t * aby);
+    let dx = p.x - closest.x;
+    let dy = p.y - closest.y;
+    ((dx * dx + dy * dy).sqrt(), closest)
 }
 
 impl Widget for SkyViewWidget {
@@ -342,6 +425,7 @@ impl Widget for SkyViewWidget {
         // Reset the painted-bodies cache for this frame; will be filled in
         // as we project stars / planets.
         let mut painted: Vec<PaintedBody> = Vec::new();
+        let mut painted_lines: Vec<PaintedSegment> = Vec::new();
 
         // Night-sky backdrop (deep indigo).
         Self::fill_rect(ctx, Rect::new(0.0, 0.0, w, h), Color::from_rgb8(10, 10, 25));
@@ -372,9 +456,14 @@ impl Widget for SkyViewWidget {
         // Constellation lines (optional).
         if self.show_constellations.get() {
             let line_color = Color::from_rgba8(100, 150, 255, 100);
+            // Look up endpoints in the *full* catalog (seed + parsed
+            // CSV) so constellation lines can reference extended-catalog
+            // stars like Sadalsuud or Kaus Media. BRIGHTEST_STARS alone
+            // is the 26-star seed and only covers Orion + Ursa Major.
+            let stars = all_stars();
             for line in CONSTELLATION_LINES {
-                let from = BRIGHTEST_STARS.iter().find(|s| s.id == line.from_id);
-                let to = BRIGHTEST_STARS.iter().find(|s| s.id == line.to_id);
+                let from = stars.iter().find(|s| s.id == line.from_id);
+                let to = stars.iter().find(|s| s.id == line.to_id);
                 if let (Some(from), Some(to)) = (from, to) {
                     let h_from = equatorial_to_horizontal(from.coords, lat, lst);
                     let h_to = equatorial_to_horizontal(to.coords, lat, lst);
@@ -383,6 +472,11 @@ impl Widget for SkyViewWidget {
                         self.project_horizontal(h_to, &rot, center, focal_length),
                     ) {
                         Self::stroke_segment(ctx, p_from, p_to, 1.0, line_color);
+                        painted_lines.push(PaintedSegment {
+                            constellation_name: line.constellation_name,
+                            p0: p_from,
+                            p1: p_to,
+                        });
                     }
                 }
             }
@@ -544,6 +638,7 @@ impl Widget for SkyViewWidget {
 
         // Promote this frame's projections to the cache for the next tap.
         self.painted_bodies.replace(painted);
+        self.painted_lines.replace(painted_lines);
     }
 }
 
