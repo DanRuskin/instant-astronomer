@@ -120,6 +120,7 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
         Rc::clone(&yaw),
         Rc::clone(&pitch),
         Rc::clone(&roll),
+        Rc::clone(&calibration_yaw),
         Rc::clone(&show_constellations),
     );
     let tape_widget = HorizonTapeWidget::new(Arc::clone(&font), Rc::clone(&yaw));
@@ -129,6 +130,8 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
         platform,
         Rc::clone(&latitude),
         Rc::clone(&longitude),
+        Rc::clone(&yaw),
+        Rc::clone(&calibration_yaw),
         Rc::clone(&show_constellations),
         Rc::clone(&search_text),
         Rc::clone(&search_status),
@@ -145,11 +148,14 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
 
 /// Build the bottom configuration tray (geolocation button, constellation
 /// toggle, coordinate readout, city search).
+#[allow(clippy::too_many_arguments)]
 fn build_control_panel<P: AstronomerPlatform>(
     font: Arc<Font>,
     platform: P,
     latitude: Rc<Cell<f64>>,
     longitude: Rc<Cell<f64>>,
+    yaw: Rc<Cell<f64>>,
+    calibration_yaw: Rc<Cell<f64>>,
     show_constellations: Rc<Cell<bool>>,
     search_text: Rc<std::cell::RefCell<String>>,
     search_status: Rc<std::cell::RefCell<String>>,
@@ -170,6 +176,20 @@ fn build_control_panel<P: AstronomerPlatform>(
     )
     .with_state_cell(Rc::clone(&show_constellations));
 
+    // Calibrate-to-north button: snapshots the current live yaw into the
+    // calibration cell so the direction the user is actually pointing
+    // the phone becomes the rendered "north". A second tap with the
+    // phone (or mouse drag) pointing somewhere else re-snaps. Tapping
+    // while already aligned is a no-op.
+    let calibrate_button = {
+        let yaw = Rc::clone(&yaw);
+        let cal = Rc::clone(&calibration_yaw);
+        Button::new("Calibrate", Arc::clone(&font)).on_click(move || {
+            cal.set(yaw.get());
+            agg_gui::animation::request_draw();
+        })
+    };
+
     let coord_label = {
         let lat = Rc::clone(&latitude);
         let lng = Rc::clone(&longitude);
@@ -182,6 +202,7 @@ fn build_control_panel<P: AstronomerPlatform>(
     let row_1 = FlexRow::new()
         .with_gap(12.0)
         .add(Box::new(geo_button))
+        .add(Box::new(calibrate_button))
         .add(Box::new(constellation_checkbox))
         .add_flex(Box::new(coord_label), 1.0);
 

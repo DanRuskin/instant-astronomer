@@ -79,6 +79,11 @@ pub struct SkyViewWidget {
     yaw: Rc<Cell<f64>>,
     pitch: Rc<Cell<f64>>,
     roll: Rc<Cell<f64>>,
+    /// Subtracted from `yaw` before the projection runs. Lets the user
+    /// re-align "where my phone is pointing" with "what the app draws as
+    /// north" — see the Calibrate button in the control panel. Stored
+    /// in radians.
+    calibration_yaw: Rc<Cell<f64>>,
     filter: LowPassFilter,
 
     show_constellations: Rc<Cell<bool>>,
@@ -113,6 +118,7 @@ impl SkyViewWidget {
         yaw: Rc<Cell<f64>>,
         pitch: Rc<Cell<f64>>,
         roll: Rc<Cell<f64>>,
+        calibration_yaw: Rc<Cell<f64>>,
         show_constellations: Rc<Cell<bool>>,
     ) -> Self {
         Self {
@@ -125,6 +131,7 @@ impl SkyViewWidget {
             yaw,
             pitch,
             roll,
+            calibration_yaw,
             // κ = 0.12 (telemetry smoothing modifier) per section 4.1 of implementation.md
             filter: LowPassFilter::new(0.12),
             show_constellations,
@@ -325,8 +332,15 @@ impl Widget for SkyViewWidget {
         let center = Point::new(w / 2.0, h * 0.6);
         let focal_length = (w.min(h)) * 0.9;
 
+        // Apply the user's calibration offset to yaw before smoothing —
+        // a "Calibrate to here" tap on the control panel snapshots the
+        // current yaw into `calibration_yaw`, and we subtract it so the
+        // direction the user is actually pointing the phone ends up as
+        // the rendered "north / centre". Pitch + roll aren't usually
+        // calibrated (the gravity vector already pins them sensibly).
+        let raw_yaw = self.yaw.get() - self.calibration_yaw.get();
         let (smooth_yaw, smooth_pitch, smooth_roll) = self.filter.update(
-            self.yaw.get(),
+            raw_yaw,
             self.pitch.get(),
             self.roll.get(),
         );
