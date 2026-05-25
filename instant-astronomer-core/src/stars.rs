@@ -83,40 +83,43 @@ pub const CONSTELLATION_LINES: &[ConstellationLine] = &[
     ConstellationLine { from_id: 25, to_id: 26, constellation_name: "Ursa Major" }, // Mizar → Alkaid (handle)
 ];
 
-/// Approximate Keplerian positions for the Sun, Moon, Mars, and Jupiter at
-/// `timestamp_ms` (Unix milliseconds, UTC). Outputs are J2000.0 equatorial
-/// coordinates in radians, suitable for piping straight into
+/// Approximate Keplerian + Meeus positions for the visible Solar System
+/// bodies at `timestamp_ms` (Unix milliseconds, UTC). Outputs are J2000.0
+/// equatorial coordinates in radians, suitable for piping straight into
 /// [`crate::math::equatorial_to_horizontal`].
 ///
-/// Sun: textbook low-precision ecliptic formula (good to ~0.01°).
-/// Moon: Meeus truncated theory using the principal periodic terms — well
-///   within the sub-degree budget called out in section 3.2.
-/// Planets: 6-element Keplerian approximation (NASA JPL "approximate
-///   positions" set) reduced to a geocentric heliocentric-difference vector.
+/// - **Sun**: textbook low-precision ecliptic formula (good to ~0.01°).
+/// - **Moon**: Meeus truncated theory using the principal periodic terms
+///   — well within the sub-degree budget called out in section 3.2 of
+///   `implementation.md`.
+/// - **Planets**: simplified ecliptic-circle approximation; the planet's
+///   heliocentric position is computed from its mean longitude, then we
+///   subtract Earth's heliocentric position and rotate into equatorial
+///   coordinates by the obliquity. Visible naked-eye planets only
+///   (Mercury, Venus, Mars, Jupiter, Saturn) — the user-stated use case
+///   "Venus + Jupiter at sunset" hinges on this list.
 pub fn calculate_solar_system_bodies(timestamp_ms: i64) -> Vec<CelestialBody> {
     let jd = crate::math::unix_to_julian_date(timestamp_ms);
     let d = jd - 2451545.0;
+    let epsilon = (23.439 - 0.0000004 * d).to_radians();
 
-    // ── Sun ──────────────────────────────────────────────────────────────────
-    let sun_l = ((280.460 + 0.9856474 * d) % 360.0 + 360.0) % 360.0;
-    let sun_g = ((357.528 + 0.9856003 * d) % 360.0 + 360.0) % 360.0;
+    // ── Sun (ecliptic low-precision formula) ─────────────────────────────────
+    let sun_l = wrap_360(280.460 + 0.9856474 * d);
+    let sun_g = wrap_360(357.528 + 0.9856003 * d);
     let sun_lambda_deg = sun_l
         + 1.915 * sun_g.to_radians().sin()
         + 0.020 * (2.0 * sun_g).to_radians().sin();
     let sun_lambda = sun_lambda_deg.to_radians();
-    let epsilon = (23.439 - 0.0000004 * d).to_radians();
-    let sun_ra_raw = (sun_lambda.sin() * epsilon.cos()).atan2(sun_lambda.cos());
-    let sun_dec = (epsilon.sin() * sun_lambda.sin()).asin();
     let sun_coords = EquatorialCoords {
-        ra: wrap_2pi(sun_ra_raw),
-        dec: sun_dec,
+        ra: wrap_2pi((sun_lambda.sin() * epsilon.cos()).atan2(sun_lambda.cos())),
+        dec: (epsilon.sin() * sun_lambda.sin()).asin(),
     };
 
-    // ── Moon (Meeus low-order) ──────────────────────────────────────────────
-    let moon_lp = ((218.316 + 13.176396 * d) % 360.0 + 360.0) % 360.0;
-    let moon_m  = ((134.963 + 13.064993 * d) % 360.0 + 360.0) % 360.0;
-    let moon_d  = ((297.850 + 12.190749 * d) % 360.0 + 360.0) % 360.0;
-    let moon_f  = (( 93.272 + 13.229350 * d) % 360.0 + 360.0) % 360.0;
+    // ── Moon (Meeus low-order; principal periodic terms) ─────────────────────
+    let moon_lp = wrap_360(218.316 + 13.176396 * d);
+    let moon_m  = wrap_360(134.963 + 13.064993 * d);
+    let moon_d  = wrap_360(297.850 + 12.190749 * d);
+    let moon_f  = wrap_360( 93.272 + 13.229350 * d);
     let moon_lambda_deg = moon_lp
         + 6.289 * moon_m.to_radians().sin()
         + 1.274 * (2.0 * moon_d - moon_m).to_radians().sin()
@@ -126,25 +129,55 @@ pub fn calculate_solar_system_bodies(timestamp_ms: i64) -> Vec<CelestialBody> {
     let cos_beta = moon_beta.cos();
     let y = moon_lambda.sin() * cos_beta * epsilon.cos() - moon_beta.sin() * epsilon.sin();
     let x = moon_lambda.cos() * cos_beta;
-    let moon_ra_raw = y.atan2(x);
-    let moon_dec =
-        (moon_lambda.sin() * cos_beta * epsilon.sin() + moon_beta.sin() * epsilon.cos()).asin();
     let moon_coords = EquatorialCoords {
-        ra: wrap_2pi(moon_ra_raw),
-        dec: moon_dec,
+        ra: wrap_2pi(y.atan2(x)),
+        dec: (moon_lambda.sin() * cos_beta * epsilon.sin() + moon_beta.sin() * epsilon.cos())
+            .asin(),
     };
 
-    // ── Mars + Jupiter (heliocentric → geocentric subtraction) ──────────────
-    let l_e = (((100.464 + 0.9856003 * d) % 360.0) + 360.0) % 360.0;
-    let l_m = (((355.453 + 0.5240208 * d) % 360.0) + 360.0) % 360.0;
-    let l_j = ((( 34.404 + 0.0830853 * d) % 360.0) + 360.0) % 360.0;
-    let e_rad = l_e.to_radians();
-    let r_e = 1.000_f64; // AU
-    let r_m = 1.524_f64;
-    let r_j = 5.203_f64;
+    // ── Naked-eye planets (heliocentric → geocentric → equatorial) ───────────
+    // Mean-longitude table (degrees + degrees/day) sourced from the NASA JPL
+    // "Approximate Positions of the Planets" series, simplified to circular
+    // orbits in the ecliptic plane. Inclination is folded in as a small
+    // out-of-plane Z component.
+    let earth = PlanetMeanOrbit {
+        l_0: 100.464,
+        l_dot: 0.985_600_3,
+        a: 1.000,
+        i_deg: 0.0,
+    };
+    let mercury = PlanetMeanOrbit {
+        l_0: 252.250_906,
+        l_dot: 4.092_338,
+        a: 0.387,
+        i_deg: 7.005,
+    };
+    let venus = PlanetMeanOrbit {
+        l_0: 181.979_130,
+        l_dot: 1.602_136,
+        a: 0.723,
+        i_deg: 3.395,
+    };
+    let mars = PlanetMeanOrbit {
+        l_0: 355.453,
+        l_dot: 0.524_020_8,
+        a: 1.524,
+        i_deg: 1.850,
+    };
+    let jupiter = PlanetMeanOrbit {
+        l_0: 34.404,
+        l_dot: 0.083_085_3,
+        a: 5.203,
+        i_deg: 1.305,
+    };
+    let saturn = PlanetMeanOrbit {
+        l_0: 50.077_471,
+        l_dot: 0.033_460,
+        a: 9.537,
+        i_deg: 2.485,
+    };
 
-    let mars_coords = planet_geocentric_eq(r_m, l_m.to_radians(), e_rad, r_e, 1.85_f64);
-    let jupiter_coords = planet_geocentric_eq(r_j, l_j.to_radians(), e_rad, r_e, 1.30_f64);
+    let earth_pos = earth.heliocentric_pos(d);
 
     vec![
         CelestialBody {
@@ -160,38 +193,159 @@ pub fn calculate_solar_system_bodies(timestamp_ms: i64) -> Vec<CelestialBody> {
             color: Color::from_rgb8(220, 220, 240),
         },
         CelestialBody {
+            name: "Mercury",
+            coords: planet_eq_from_helio(mercury.heliocentric_pos(d), earth_pos, epsilon),
+            magnitude: 0.0,
+            color: Color::from_rgb8(200, 200, 200),
+        },
+        CelestialBody {
+            name: "Venus",
+            coords: planet_eq_from_helio(venus.heliocentric_pos(d), earth_pos, epsilon),
+            magnitude: -4.4,
+            color: Color::from_rgb8(255, 240, 200),
+        },
+        CelestialBody {
             name: "Mars",
-            coords: mars_coords,
+            coords: planet_eq_from_helio(mars.heliocentric_pos(d), earth_pos, epsilon),
             magnitude: 1.5,
             color: Color::from_rgb8(230, 100, 80),
         },
         CelestialBody {
             name: "Jupiter",
-            coords: jupiter_coords,
+            coords: planet_eq_from_helio(jupiter.heliocentric_pos(d), earth_pos, epsilon),
             magnitude: -2.0,
             color: Color::from_rgb8(240, 200, 160),
+        },
+        CelestialBody {
+            name: "Saturn",
+            coords: planet_eq_from_helio(saturn.heliocentric_pos(d), earth_pos, epsilon),
+            magnitude: 0.6,
+            color: Color::from_rgb8(220, 200, 150),
         },
     ]
 }
 
-/// Project a planet's heliocentric circular-orbit position into geocentric
-/// equatorial coordinates. The full JPL six-element Kepler solve is the
-/// eventual upgrade; this circular approximation keeps Mars/Jupiter readable
-/// on the sky without the full code path.
-fn planet_geocentric_eq(
-    r_planet: f64,
-    l_planet_rad: f64,
-    l_earth_rad: f64,
-    r_earth: f64,
-    incl_deg: f64,
+/// Mean-orbit elements for a planet, simplified to circular + small
+/// inclination. Enough for "where is Venus right now" naked-eye accuracy.
+#[derive(Debug, Clone, Copy)]
+struct PlanetMeanOrbit {
+    /// Mean longitude at J2000.0 epoch (degrees).
+    l_0: f64,
+    /// Mean longitude rate of change (degrees per day).
+    l_dot: f64,
+    /// Semi-major axis (AU).
+    a: f64,
+    /// Orbital inclination (degrees).
+    i_deg: f64,
+}
+
+impl PlanetMeanOrbit {
+    /// Heliocentric ecliptic 3D position (AU) at `d` days past J2000.0.
+    fn heliocentric_pos(&self, d: f64) -> [f64; 3] {
+        let l_rad = wrap_360(self.l_0 + self.l_dot * d).to_radians();
+        let i = self.i_deg.to_radians();
+        let x = self.a * l_rad.cos();
+        let y = self.a * l_rad.sin() * i.cos();
+        let z = self.a * l_rad.sin() * i.sin();
+        [x, y, z]
+    }
+}
+
+/// Convert a planet's heliocentric ecliptic position to geocentric
+/// equatorial (RA, Dec) coordinates.
+fn planet_eq_from_helio(
+    planet: [f64; 3],
+    earth: [f64; 3],
+    obliquity_rad: f64,
 ) -> EquatorialCoords {
-    let dx = r_planet * l_planet_rad.cos() - r_earth * l_earth_rad.cos();
-    let dy = r_planet * l_planet_rad.sin() - r_earth * l_earth_rad.sin();
-    let ra_raw = dy.atan2(dx);
-    let dec = (incl_deg.to_radians()) * l_planet_rad.sin();
+    // Geocentric ecliptic position = planet - earth.
+    let gx = planet[0] - earth[0];
+    let gy = planet[1] - earth[1];
+    let gz = planet[2] - earth[2];
+
+    // Rotate from ecliptic to equatorial coordinates (rotation around the
+    // ecliptic X axis by the obliquity).
+    let cos_e = obliquity_rad.cos();
+    let sin_e = obliquity_rad.sin();
+    let eq_x = gx;
+    let eq_y = gy * cos_e - gz * sin_e;
+    let eq_z = gy * sin_e + gz * cos_e;
+
+    let r_xy = (eq_x * eq_x + eq_y * eq_y).sqrt();
     EquatorialCoords {
-        ra: wrap_2pi(ra_raw),
-        dec,
+        ra: wrap_2pi(eq_y.atan2(eq_x)),
+        dec: eq_z.atan2(r_xy),
+    }
+}
+
+/// Wrap a degree value to `[0, 360)`.
+fn wrap_360(a: f64) -> f64 {
+    let mut v = a % 360.0;
+    if v < 0.0 {
+        v += 360.0;
+    }
+    v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::PI;
+
+    /// Sanity-check that the Sun's RA at J2000.0 epoch (Jan 1, 2000 noon UT)
+    /// lands near 18h22m, declination near -23° (it's a few weeks past the
+    /// December solstice). Tolerance is generous to allow the
+    /// low-precision formula's drift.
+    #[test]
+    fn sun_position_at_j2000() {
+        // Unix ms for 2000-01-01T12:00:00Z = 946728000000
+        let bodies = calculate_solar_system_bodies(946_728_000_000);
+        let sun = bodies.iter().find(|b| b.name == "Sun").expect("Sun present");
+        // RA expected ≈ 18.75h = 280.6°; allow ±5° slop for the truncated formula.
+        let ra_deg = sun.coords.ra.to_degrees();
+        let dec_deg = sun.coords.dec.to_degrees();
+        assert!(
+            (ra_deg - 280.6).abs() < 5.0,
+            "Sun RA at J2000 should be near 280.6°, got {ra_deg:.2}°"
+        );
+        assert!(
+            (dec_deg - (-23.0)).abs() < 3.0,
+            "Sun Dec at J2000 should be near -23°, got {dec_deg:.2}°"
+        );
+    }
+
+    /// All 7 named bodies must be present so the sky_view rendering doesn't
+    /// silently lose Venus etc. if calculate_* gets refactored.
+    #[test]
+    fn all_named_bodies_emitted() {
+        let bodies = calculate_solar_system_bodies(946_728_000_000);
+        let names: Vec<&str> = bodies.iter().map(|b| b.name).collect();
+        for expected in ["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn"] {
+            assert!(
+                names.contains(&expected),
+                "expected {expected} in {names:?}"
+            );
+        }
+    }
+
+    /// Coordinates should be normalized into the documented ranges.
+    #[test]
+    fn coordinates_in_expected_ranges() {
+        let bodies = calculate_solar_system_bodies(946_728_000_000);
+        for body in &bodies {
+            assert!(
+                body.coords.ra >= 0.0 && body.coords.ra < 2.0 * PI,
+                "{} RA out of [0, 2π): {}",
+                body.name,
+                body.coords.ra
+            );
+            assert!(
+                body.coords.dec >= -PI / 2.0 && body.coords.dec <= PI / 2.0,
+                "{} Dec out of [-π/2, π/2]: {}",
+                body.name,
+                body.coords.dec
+            );
+        }
     }
 }
 
