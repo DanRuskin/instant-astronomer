@@ -82,11 +82,13 @@ function showBootError(err: unknown): void {
 }
 
 async function loadWasm(): Promise<WasmModule> {
-  const meta = import.meta as ImportMeta & { env?: { BASE_URL?: string } };
-  const base = meta.env?.BASE_URL ?? "/";
-  const url = `${base}pkg/instant_astronomer_wasm.js`;
+  // Resolve against `document.baseURI` so the URL is correct regardless
+  // of where Vite places the bundle (under `/assets/` after build).
+  // `import.meta.env.BASE_URL` was returning `"/"` on GitHub Pages
+  // under the `/instant-astronomer/` sub-path which broke the load.
+  const url = new URL("pkg/instant_astronomer_wasm.js", document.baseURI).href;
   const mod = (await import(/* @vite-ignore */ url)) as WasmModule;
-  const wasmUrl = `${base}pkg/instant_astronomer_wasm_bg.wasm`;
+  const wasmUrl = new URL("pkg/instant_astronomer_wasm_bg.wasm", document.baseURI).href;
   await mod.default(wasmUrl);
   return mod;
 }
