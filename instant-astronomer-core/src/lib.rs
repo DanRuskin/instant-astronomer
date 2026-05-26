@@ -39,8 +39,7 @@ use agg_gui::App;
 use nalgebra::UnitQuaternion;
 
 use crate::icons::{
-    load_icon_font, FA_CIRCLE_NODES, FA_COMPASS, FA_CROSSHAIRS, FA_EXPAND,
-    FA_MOBILE_SCREEN_BUTTON,
+    load_icon_font, FA_COMPASS, FA_CROSSHAIRS, FA_EXPAND, FA_MAP_MARKER, FA_MOBILE, FA_STAR,
 };
 use crate::widgets::horizon_tape::HorizonTapeWidget;
 use crate::widgets::sky_view::SkyViewWidget;
@@ -236,30 +235,60 @@ fn build_control_panel<P: AstronomerPlatform>(
         let platform = Rc::clone(&platform);
         let toast = Rc::clone(&toast);
         let label = if mobile { "" } else { "Locate me" };
-        Button::new(label, Arc::clone(&font))
+        let mut b = Button::new(label, Arc::clone(&font))
             .with_icon(FA_CROSSHAIRS, Arc::clone(&icon_font))
             .on_click(move || {
                 crate::toast::show(&toast, "Locating…");
                 platform.request_geolocation();
-            })
+            });
+        if mobile {
+            b = b.with_compact();
+        }
+        b
     };
 
-    // Toggle: when checked the app uses the device's reported
-    // geolocation; when unchecked the city-search field appears so the
-    // user can pick a location by name. Both at once is redundant.
-    // Maintain an inverted `show_search` cell so the `Conditional`
-    // wrapping the search row can stay declarative — Checkbox's
-    // `with_state_cell` writes `use_geolocation` automatically; the
-    // `on_change` closure just mirrors that to `show_search`.
+    // Geolocation toggle. When ON the app uses the device-reported
+    // lat/lng; when OFF the city-search field appears. The two are
+    // mutually exclusive — geolocation already gives exact lat/lng.
+    // `show_search` is the inverted state the `Conditional` wrapping
+    // the search row watches; we mirror `use_geolocation` into it on
+    // every flip.
     let show_search = Rc::new(Cell::new(!use_geolocation.get()));
-    let geo_checkbox = {
+    let geo_toggle: Box<dyn agg_gui::widget::Widget> = if mobile {
+        let click_cell = Rc::clone(&use_geolocation);
+        let active_cell = Rc::clone(&use_geolocation);
         let show_search = Rc::clone(&show_search);
-        Checkbox::new("Use geolocation", Arc::clone(&font), use_geolocation.get())
-            .with_state_cell(Rc::clone(&use_geolocation))
-            .on_change(move |checked| {
-                show_search.set(!checked);
-                agg_gui::animation::request_draw();
-            })
+        let toast = Rc::clone(&toast);
+        Box::new(
+            Button::new("", Arc::clone(&font))
+                .with_icon(FA_MAP_MARKER, Arc::clone(&icon_font))
+                .with_active_fn(move || active_cell.get())
+                .with_compact()
+                .on_click(move || {
+                    let new_val = !click_cell.get();
+                    click_cell.set(new_val);
+                    show_search.set(!new_val);
+                    crate::toast::show(
+                        &toast,
+                        if new_val {
+                            "Using device geolocation"
+                        } else {
+                            "Pick a city to use its coordinates"
+                        },
+                    );
+                    agg_gui::animation::request_draw();
+                }),
+        )
+    } else {
+        let show_search = Rc::clone(&show_search);
+        Box::new(
+            Checkbox::new("Use geolocation", Arc::clone(&font), use_geolocation.get())
+                .with_state_cell(Rc::clone(&use_geolocation))
+                .on_change(move |checked| {
+                    show_search.set(!checked);
+                    agg_gui::animation::request_draw();
+                }),
+        )
     };
 
     // Constellation overlay toggle. Mobile uses an icon-only Button
@@ -273,8 +302,9 @@ fn build_control_panel<P: AstronomerPlatform>(
         let toast = Rc::clone(&toast);
         Box::new(
             Button::new("", Arc::clone(&font))
-                .with_icon(FA_CIRCLE_NODES, Arc::clone(&icon_font))
+                .with_icon(FA_STAR, Arc::clone(&icon_font))
                 .with_active_fn(move || active_cell.get())
+                .with_compact()
                 .on_click(move || {
                     let new_val = !click_cell.get();
                     click_cell.set(new_val);
@@ -318,8 +348,9 @@ fn build_control_panel<P: AstronomerPlatform>(
         let toast = Rc::clone(&toast);
         Box::new(
             Button::new("", Arc::clone(&font))
-                .with_icon(FA_MOBILE_SCREEN_BUTTON, Arc::clone(&icon_font))
+                .with_icon(FA_MOBILE, Arc::clone(&icon_font))
                 .with_active_fn(move || active_cell.get())
+                .with_compact()
                 .on_click(move || {
                     let new_val = !click_cell.get();
                     click_cell.set(new_val);
@@ -366,13 +397,17 @@ fn build_control_panel<P: AstronomerPlatform>(
         let cal = Rc::clone(&calibration_yaw);
         let toast = Rc::clone(&toast);
         let label = if mobile { "" } else { "Calibrate" };
-        Button::new(label, Arc::clone(&font))
+        let mut b = Button::new(label, Arc::clone(&font))
             .with_icon(FA_COMPASS, Arc::clone(&icon_font))
             .on_click(move || {
                 cal.set(view_quat_heading_rad(vq.get()));
                 crate::toast::show(&toast, "Calibrated to current heading");
                 agg_gui::animation::request_draw();
-            })
+            });
+        if mobile {
+            b = b.with_compact();
+        }
+        b
     };
 
     // Full-screen toggle. Icon-only (no label) in both modes — the
@@ -382,12 +417,16 @@ fn build_control_panel<P: AstronomerPlatform>(
     let fullscreen_button = {
         let platform = Rc::clone(&platform);
         let toast = Rc::clone(&toast);
-        Button::new("", Arc::clone(&font))
+        let mut b = Button::new("", Arc::clone(&font))
             .with_icon(FA_EXPAND, Arc::clone(&icon_font))
             .on_click(move || {
                 platform.toggle_fullscreen();
                 crate::toast::show(&toast, "Toggled fullscreen");
-            })
+            });
+        if mobile {
+            b = b.with_compact();
+        }
+        b
     };
 
     let coord_label = {
@@ -417,9 +456,13 @@ fn build_control_panel<P: AstronomerPlatform>(
     // second row when it can't fit (e.g. Pixel in portrait). On wider
     // viewports it stays a single row — no visual change for desktop /
     // landscape tablets.
+    // Tighter gap on mobile — the buttons themselves shrink via
+    // `with_compact()`, so packing them closer keeps the row from
+    // wrapping for a few more pixels of viewport width.
+    let h_gap = if mobile { 6.0 } else { 12.0 };
     let row_1 = WrappingRow::new()
-        .with_gap(12.0, 6.0)
-        .add(Box::new(geo_checkbox))
+        .with_gap(h_gap, 6.0)
+        .add(geo_toggle)
         .add(Box::new(geo_button))
         .add(Box::new(calibrate_button))
         .add(constellation_toggle)

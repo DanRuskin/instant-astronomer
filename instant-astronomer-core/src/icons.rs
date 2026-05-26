@@ -18,6 +18,12 @@ pub fn load_icon_font() -> Arc<Font> {
     Arc::new(Font::from_slice(ICON_FONT_BYTES).expect("instant-astronomer icon font"))
 }
 
+// Codepoints below are restricted to Font Awesome 5 Free Solid —
+// the bundled `fa.ttf` has 704 glyphs from that era and lacks the
+// FA-6-only `e000`-block icons. If you add a codepoint here, check
+// it's present in the font (see `scripts` history for the inspector
+// one-liner) — otherwise it renders as a tofu box on the button.
+
 /// Crosshairs — used for the "Locate me" geolocation button.
 pub const FA_CROSSHAIRS: char = '\u{f05b}';
 
@@ -30,12 +36,18 @@ pub const FA_EXPAND: char = '\u{f065}';
 /// Compress arrows pointing inward — used when already full-screen.
 pub const FA_COMPRESS: char = '\u{f066}';
 
-/// Circle of connected nodes — used for the Constellations toggle on
-/// mobile (visually a star-figure / asterism).
-pub const FA_CIRCLE_NODES: char = '\u{e4e2}';
+/// Five-point star — used for the Constellations overlay toggle.
+/// FA 5 codepoint; the FA 6-only `circle-nodes` icon we tried before
+/// rendered as a tofu box in this font.
+pub const FA_STAR: char = '\u{f005}';
 
-/// Mobile phone screen with a centre dot — used for the
-/// "use compass / accelerometer" toggle. Hints at "phone sensors drive
-/// the view"; tap to disable when the magnetometer is mis-calibrated
-/// and let mouse / touch swipe take over.
-pub const FA_MOBILE_SCREEN_BUTTON: char = '\u{f3cd}';
+/// Mobile phone — used for the "use compass / accelerometer" toggle.
+/// Hints at "phone sensors drive the view"; tap to disable when the
+/// magnetometer is mis-calibrated and let mouse / touch swipe take
+/// over. (FA 5; the FA-6 `mobile-screen-button` we tried before
+/// rendered as a tofu box.)
+pub const FA_MOBILE: char = '\u{f10b}';
+
+/// Map marker — used for the "Use geolocation" toggle on mobile so
+/// the row stays icon-only.
+pub const FA_MAP_MARKER: char = '\u{f041}';
