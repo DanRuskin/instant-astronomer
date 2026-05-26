@@ -114,7 +114,12 @@ impl AstronomerPlatform for WasmPlatform {
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
-    ensure_app();
+    // Don't build the widget tree here. `draw_frame()` builds it
+    // lazily via `ensure_app()`, which runs AFTER the JS shell has
+    // called `set_client_platform(...)` — so `is_mobile_touch()`
+    // returns the right answer when the control panel decides
+    // between icon-only and labelled toggles. Building eagerly here
+    // would freeze the layout in Desktop mode on a real phone.
 
     // Spawn async initialization of wgpu on the browser canvas
     wasm_bindgen_futures::spawn_local(async {

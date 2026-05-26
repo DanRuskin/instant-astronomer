@@ -16,8 +16,10 @@ use agg_gui::text::Font;
 
 use crate::math::{horizontal_to_cartesian, HorizontalCoords};
 use crate::stars::zodiac_date_range;
+use crate::toast::{opacity_for, ToastState};
 
-use super::{point_to_segment_distance, PaintedBody, PaintedSegment, Selection};
+use super::geometry::point_to_segment_distance;
+use super::{PaintedBody, PaintedSegment, Selection};
 
 use std::f64::consts::PI;
 
@@ -533,4 +535,54 @@ pub(super) fn paint_info_card(
             - i as f64 * (body_size + line_gap);
         ctx.fill_text(line, x + pad, baseline);
     }
+}
+
+/// Paint the transient action-feedback toast at the top of the sky
+/// view. No-op when the cell is empty or the toast has fully faded.
+/// `now_ms` is the current Unix epoch ms — passed in so the painter
+/// stays pure (testable without mocking the clock).
+pub(super) fn paint_toast(
+    ctx: &mut dyn DrawCtx,
+    font: Arc<Font>,
+    w: f64,
+    h: f64,
+    state: &Option<ToastState>,
+    now_ms: i64,
+) {
+    let Some(state) = state else { return };
+    let Some(alpha) = opacity_for(state, now_ms) else { return };
+    if state.message.is_empty() {
+        return;
+    }
+    // The fade is animating — request another frame so the toast
+    // actually fades out instead of getting stuck at its current
+    // alpha until something else triggers a repaint.
+    agg_gui::animation::request_draw_without_invalidation();
+
+    ctx.set_font(font);
+    let text_size = 13.0_f64;
+    let pad_x = 14.0_f64;
+    let pad_y = 8.0_f64;
+    let approx_w = (state.message.chars().count() as f64) * text_size * 0.6;
+    let card_w = approx_w + pad_x * 2.0;
+    let card_h = text_size + pad_y * 2.0;
+    let card_x = ((w - card_w) * 0.5).max(8.0).min(w - card_w - 8.0);
+    // Y-up: high y = top of screen. Sit ~32 px below the top edge.
+    let card_y = h - card_h - 32.0;
+
+    let a = (255.0 * alpha) as u8;
+    ctx.set_fill_color(Color::from_rgba8(15, 20, 38, (220.0 * alpha) as u8));
+    ctx.begin_path();
+    ctx.rounded_rect(card_x, card_y, card_w, card_h, 8.0);
+    ctx.fill();
+    ctx.set_stroke_color(Color::from_rgba8(255, 215, 90, (170.0 * alpha) as u8));
+    ctx.set_line_width(1.0);
+    ctx.begin_path();
+    ctx.rounded_rect(card_x, card_y, card_w, card_h, 8.0);
+    ctx.stroke();
+
+    ctx.set_fill_color(Color::from_rgba8(255, 240, 200, a));
+    ctx.set_font_size(text_size);
+    let baseline = card_y + pad_y - text_size * 0.15;
+    ctx.fill_text(&state.message, card_x + pad_x, baseline);
 }

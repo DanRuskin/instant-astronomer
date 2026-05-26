@@ -17,6 +17,7 @@ pub mod cities;
 pub mod icons;
 pub mod math;
 pub mod stars;
+pub mod toast;
 
 pub mod widgets {
     //! Custom widgets used by the Instant-Astronomer UI shell.
@@ -129,6 +130,10 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
         let p = Rc::clone(&platform);
         Rc::new(move || p.local_offset_minutes())
     };
+    // Shared toast cell. Control-panel actions write here; the sky
+    // widget paints a transient card. Replaces the explanatory text
+    // we used to show alongside the buttons (now icons on mobile).
+    let toast = crate::toast::new_toast_cell();
     // Default coordinates: Royal Observatory Greenwich — neutral starting
     // point until the platform geolocation hook resolves.
     let latitude = Rc::new(Cell::new(51.4769));
@@ -169,6 +174,7 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
         Rc::clone(&calibration_yaw),
         Rc::clone(&show_constellations),
         Rc::clone(&local_offset_fn),
+        Rc::clone(&toast),
     );
     let tape_widget = HorizonTapeWidget::new(Arc::clone(&font), Rc::clone(&view_quat));
 
@@ -185,6 +191,7 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
         Rc::clone(&use_device_orientation),
         Rc::clone(&search_text),
         Rc::clone(&search_status),
+        Rc::clone(&toast),
     );
 
     let root = FlexColumn::new()
@@ -212,6 +219,7 @@ fn build_control_panel<P: AstronomerPlatform>(
     use_device_orientation: Rc<Cell<bool>>,
     search_text: Rc<std::cell::RefCell<String>>,
     search_status: Rc<std::cell::RefCell<String>>,
+    toast: crate::toast::ToastCell,
 ) -> Container {
     let icon_font = load_icon_font();
     // On mobile-touch viewports the action buttons collapse to icon-
@@ -226,10 +234,12 @@ fn build_control_panel<P: AstronomerPlatform>(
     // lookup).
     let geo_button = {
         let platform = Rc::clone(&platform);
+        let toast = Rc::clone(&toast);
         let label = if mobile { "" } else { "Locate me" };
         Button::new(label, Arc::clone(&font))
             .with_icon(FA_CROSSHAIRS, Arc::clone(&icon_font))
             .on_click(move || {
+                crate::toast::show(&toast, "Locating…");
                 platform.request_geolocation();
             })
     };
@@ -260,23 +270,40 @@ fn build_control_panel<P: AstronomerPlatform>(
     let constellation_toggle: Box<dyn agg_gui::widget::Widget> = if mobile {
         let click_cell = Rc::clone(&show_constellations);
         let active_cell = Rc::clone(&show_constellations);
+        let toast = Rc::clone(&toast);
         Box::new(
             Button::new("", Arc::clone(&font))
                 .with_icon(FA_CIRCLE_NODES, Arc::clone(&icon_font))
                 .with_active_fn(move || active_cell.get())
                 .on_click(move || {
-                    click_cell.set(!click_cell.get());
+                    let new_val = !click_cell.get();
+                    click_cell.set(new_val);
+                    crate::toast::show(
+                        &toast,
+                        if new_val {
+                            "Constellations on"
+                        } else {
+                            "Constellations off"
+                        },
+                    );
                     agg_gui::animation::request_draw();
                 }),
         )
     } else {
+        let toast = Rc::clone(&toast);
         Box::new(
             Checkbox::new(
                 "Constellations",
                 Arc::clone(&font),
                 show_constellations.get(),
             )
-            .with_state_cell(Rc::clone(&show_constellations)),
+            .with_state_cell(Rc::clone(&show_constellations))
+            .on_change(move |checked| {
+                crate::toast::show(
+                    &toast,
+                    if checked { "Constellations on" } else { "Constellations off" },
+                );
+            }),
         )
     };
 
@@ -288,23 +315,44 @@ fn build_control_panel<P: AstronomerPlatform>(
     let compass_toggle: Box<dyn agg_gui::widget::Widget> = if mobile {
         let click_cell = Rc::clone(&use_device_orientation);
         let active_cell = Rc::clone(&use_device_orientation);
+        let toast = Rc::clone(&toast);
         Box::new(
             Button::new("", Arc::clone(&font))
                 .with_icon(FA_MOBILE_SCREEN_BUTTON, Arc::clone(&icon_font))
                 .with_active_fn(move || active_cell.get())
                 .on_click(move || {
-                    click_cell.set(!click_cell.get());
+                    let new_val = !click_cell.get();
+                    click_cell.set(new_val);
+                    crate::toast::show(
+                        &toast,
+                        if new_val {
+                            "Compass on — orientation sensors driving view"
+                        } else {
+                            "Compass off — drag to look around"
+                        },
+                    );
                     agg_gui::animation::request_draw();
                 }),
         )
     } else {
+        let toast = Rc::clone(&toast);
         Box::new(
             Checkbox::new(
                 "Use compass",
                 Arc::clone(&font),
                 use_device_orientation.get(),
             )
-            .with_state_cell(Rc::clone(&use_device_orientation)),
+            .with_state_cell(Rc::clone(&use_device_orientation))
+            .on_change(move |checked| {
+                crate::toast::show(
+                    &toast,
+                    if checked {
+                        "Compass on — sensors driving view"
+                    } else {
+                        "Compass off — drag to look around"
+                    },
+                );
+            }),
         )
     };
 
@@ -316,11 +364,13 @@ fn build_control_panel<P: AstronomerPlatform>(
     let calibrate_button = {
         let vq = Rc::clone(&view_quat);
         let cal = Rc::clone(&calibration_yaw);
+        let toast = Rc::clone(&toast);
         let label = if mobile { "" } else { "Calibrate" };
         Button::new(label, Arc::clone(&font))
             .with_icon(FA_COMPASS, Arc::clone(&icon_font))
             .on_click(move || {
                 cal.set(view_quat_heading_rad(vq.get()));
+                crate::toast::show(&toast, "Calibrated to current heading");
                 agg_gui::animation::request_draw();
             })
     };
@@ -331,10 +381,12 @@ fn build_control_panel<P: AstronomerPlatform>(
     // Fullscreen API; native is a no-op today.
     let fullscreen_button = {
         let platform = Rc::clone(&platform);
+        let toast = Rc::clone(&toast);
         Button::new("", Arc::clone(&font))
             .with_icon(FA_EXPAND, Arc::clone(&icon_font))
             .on_click(move || {
                 platform.toggle_fullscreen();
+                crate::toast::show(&toast, "Toggled fullscreen");
             })
     };
 

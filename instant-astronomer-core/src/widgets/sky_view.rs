@@ -13,8 +13,11 @@
 //! pins an info card on it — the core "what's that bright thing on the
 //! horizon?" lookup the app was built for.
 
+mod geometry;
 mod hud;
 mod moon_phase;
+
+use geometry::point_to_segment_distance;
 
 use crate::math::{
     equatorial_to_horizontal, format_rise_set, horizontal_to_cartesian, rise_set_times,
@@ -127,6 +130,11 @@ pub struct SkyViewWidget {
     /// the concrete `AstronomerPlatform` impl.
     local_offset_fn: Rc<dyn Fn() -> i32>,
 
+    /// Shared toast cell. The control panel writes feedback messages
+    /// here ("Calibrated", "Constellations on", …); this widget reads
+    /// and paints the card on top of the sky.
+    toast: crate::toast::ToastCell,
+
     /// Set on MouseDown, cleared on MouseUp / MouseLeave. While set we
     /// track whether the pointer drifted enough to count as a drag.
     down: Option<DownGesture>,
@@ -163,6 +171,7 @@ impl SkyViewWidget {
         calibration_yaw: Rc<Cell<f64>>,
         show_constellations: Rc<Cell<bool>>,
         local_offset_fn: Rc<dyn Fn() -> i32>,
+        toast: crate::toast::ToastCell,
     ) -> Self {
         Self {
             bounds: Rect::default(),
@@ -175,6 +184,7 @@ impl SkyViewWidget {
             calibration_yaw,
             show_constellations,
             local_offset_fn,
+            toast,
             down: None,
             painted_bodies: RefCell::new(Vec::new()),
             painted_lines: RefCell::new(Vec::new()),
@@ -320,67 +330,6 @@ impl SkyViewWidget {
 }
 
 
-/// Shortest distance from point `p` to the line segment `a → b`, plus
-/// the closest point on the segment. Used by [`SkyViewWidget::hit_test_tap`]
-/// to resolve taps on constellation line segments.
-pub(super) fn point_to_segment_distance(p: Point, a: Point, b: Point) -> (f64, Point) {
-    let abx = b.x - a.x;
-    let aby = b.y - a.y;
-    let len_sq = abx * abx + aby * aby;
-    if len_sq < 1e-9 {
-        let dx = p.x - a.x;
-        let dy = p.y - a.y;
-        return ((dx * dx + dy * dy).sqrt(), a);
-    }
-    let t = (((p.x - a.x) * abx + (p.y - a.y) * aby) / len_sq).clamp(0.0, 1.0);
-    let closest = Point::new(a.x + t * abx, a.y + t * aby);
-    let dx = p.x - closest.x;
-    let dy = p.y - closest.y;
-    ((dx * dx + dy * dy).sqrt(), closest)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `t`-clamping branches: point projects past the endpoints should
-    /// resolve to the endpoint, not to the extended line.
-    #[test]
-    fn segment_distance_clamps_to_endpoints() {
-        let a = Point::new(0.0, 0.0);
-        let b = Point::new(10.0, 0.0);
-        // Past the start of the segment.
-        let (d, c) = point_to_segment_distance(Point::new(-5.0, 0.0), a, b);
-        assert_eq!(d, 5.0);
-        assert_eq!((c.x, c.y), (0.0, 0.0));
-        // Past the end.
-        let (d, c) = point_to_segment_distance(Point::new(20.0, 3.0), a, b);
-        assert!((d - ((10.0_f64).hypot(3.0))).abs() < 1e-9);
-        assert_eq!((c.x, c.y), (10.0, 0.0));
-    }
-
-    /// Perpendicular distance to the interior of the segment is the
-    /// y-offset for a horizontal segment.
-    #[test]
-    fn segment_distance_perpendicular_inside() {
-        let a = Point::new(0.0, 0.0);
-        let b = Point::new(10.0, 0.0);
-        let (d, c) = point_to_segment_distance(Point::new(4.0, 7.0), a, b);
-        assert_eq!(d, 7.0);
-        assert_eq!((c.x, c.y), (4.0, 0.0));
-    }
-
-    /// Degenerate segment (a == b) must still yield a sane distance
-    /// (radial from the shared point), not divide by zero.
-    #[test]
-    fn segment_distance_degenerate_handled() {
-        let p = Point::new(3.0, 4.0);
-        let (d, c) = point_to_segment_distance(p, Point::new(0.0, 0.0), Point::new(0.0, 0.0));
-        assert_eq!(d, 5.0);
-        assert_eq!((c.x, c.y), (0.0, 0.0));
-    }
-}
-
 impl Widget for SkyViewWidget {
     fn type_name(&self) -> &'static str {
         "SkyViewWidget"
@@ -441,21 +390,29 @@ impl Widget for SkyViewWidget {
                 if down.is_drag {
                     let dx = pos.x - down.last.x;
                     let dy = pos.y - down.last.y;
-                    let sensitivity = 0.003;
+                    // Pixel-accurate sensitivity: drag the screen by N
+                    // pixels and the projected world moves by N pixels.
+                    // Matches `paint`'s focal_length formula so a finger
+                    // dragging a star keeps the star under the finger.
+                    let focal_length =
+                        (self.bounds.width.min(self.bounds.height)) * 0.9;
+                    let sensitivity = if focal_length > 1.0 {
+                        1.0 / focal_length
+                    } else {
+                        0.003
+                    };
 
-                    // Decompose → increment → recompose. The
-                    // previous formulation (`q_world_yaw * view_quat
-                    // * q_local_pitch`) looked roll-free on paper
-                    // but accumulated small roll under sequences of
+                    // Decompose → increment → recompose. The previous
+                    // `q_world_yaw * view_quat * q_local_pitch`
+                    // formulation looked roll-free on paper but
+                    // accumulated small roll under sequences of
                     // diagonal drags (pinned in
                     // `math::tests::alt_zero_projects_to_horizontal_line_after_drags`).
-                    // Round-tripping through (yaw, pitch) every
-                    // drag guarantees the rebuilt quaternion lives
-                    // in the no-roll subspace exactly — any drift
-                    // gets discarded.
+                    // Round-tripping through (yaw, pitch) every drag
+                    // guarantees the rebuilt quaternion lives in the
+                    // no-roll subspace exactly.
                     //
-                    // dy convention preserved from the previous
-                    // handler: drag down (positive dy) → look up
+                    // dy convention: drag down (positive dy) → look up
                     // (pitch increases).
                     let fwd = self
                         .view_quat
@@ -463,14 +420,24 @@ impl Widget for SkyViewWidget {
                         .inverse_transform_vector(&Vector3::new(0.0, 0.0, 1.0));
                     let cur_pitch = fwd.y.clamp(-1.0, 1.0).asin();
                     let cur_yaw = (-fwd.x).atan2(fwd.z);
-                    let new_yaw = cur_yaw + (-dx * sensitivity);
-                    // Clamp a hair shy of ±π/2 so atan2 stays
-                    // well-defined at the next decompose call —
-                    // otherwise the user could pin the camera at
-                    // the singularity and `cur_yaw` becomes noise.
-                    let pitch_cap = std::f64::consts::FRAC_PI_2 - 0.01;
-                    let new_pitch =
-                        (cur_pitch + dy * sensitivity).clamp(-pitch_cap, pitch_cap);
+                    let raw_pitch = cur_pitch + dy * sensitivity;
+                    let mut new_yaw = cur_yaw + (-dx * sensitivity);
+                    // Flip-past-zenith. Crossing pitch = +π/2 means the
+                    // user dragged over the top of the sky dome and is
+                    // now looking "back over their shoulder": reflect
+                    // pitch back across the pole and turn yaw by π so
+                    // the heading lands on the other side of north.
+                    // Same trick mirrored for the nadir at -π/2.
+                    use std::f64::consts::PI;
+                    let new_pitch = if raw_pitch > PI / 2.0 {
+                        new_yaw += PI;
+                        PI - raw_pitch
+                    } else if raw_pitch < -PI / 2.0 {
+                        new_yaw += PI;
+                        -PI - raw_pitch
+                    } else {
+                        raw_pitch
+                    };
                     let q_yaw =
                         UnitQuaternion::from_axis_angle(&Vector3::y_axis(), new_yaw);
                     let q_pitch =
@@ -785,6 +752,12 @@ impl Widget for SkyViewWidget {
         // Promote this frame's projections to the cache for the next tap.
         self.painted_bodies.replace(painted);
         self.painted_lines.replace(painted_lines);
+
+        // Toast on top of everything — feedback for icon-only mobile
+        // taps. `now_ms` is the projection clock, which the WASM
+        // shell pumps every frame, so the fade is in real time.
+        let toast_state = self.toast.borrow().clone();
+        hud::paint_toast(ctx, Arc::clone(&self.font), w, h, &toast_state, now_ms);
     }
 }
 
