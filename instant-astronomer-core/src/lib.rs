@@ -112,14 +112,11 @@ pub struct AstronomerHandles {
     /// swipe to look around. Lets the user opt out when the
     /// magnetometer is mis-calibrated or the phone is on a desk.
     pub use_device_orientation: Rc<Cell<bool>>,
-    /// Smoothed compass heading (radians, W3C-CCW-from-north), or
-    /// `None` until the first device-orientation event arrives. The
-    /// raw magnetometer alpha jitters by several degrees per frame —
-    /// especially near horizontal — so we feed it through a heavy
-    /// low-pass filter (see [`apply_device_orientation`]) before
-    /// composing the view quaternion. Pitch goes through unfiltered
-    /// to keep look-up / look-down snappy.
-    pub filtered_yaw: Rc<Cell<Option<f64>>>,
+    /// `true` once the first device-orientation event has fired. The
+    /// fusion filter (see [`apply_device_orientation`]) snaps on the
+    /// first reading and slerps thereafter — so we know to snap, we
+    /// need to remember whether any event has been received.
+    pub fusion_seeded: Rc<Cell<bool>>,
 }
 
 /// Build the shared Instant-Astronomer widget tree. Both the native and
@@ -160,7 +157,7 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
     // pans). User can flip the toggle either way.
     let use_device_orientation =
         Rc::new(Cell::new(agg_gui::input_profile::is_mobile_touch()));
-    let filtered_yaw: Rc<Cell<Option<f64>>> = Rc::new(Cell::new(None));
+    let fusion_seeded: Rc<Cell<bool>> = Rc::new(Cell::new(false));
     let search_text = Rc::new(std::cell::RefCell::new(String::new()));
     let search_status = Rc::new(std::cell::RefCell::new(String::from("Type a city to search")));
 
@@ -171,7 +168,7 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
         view_quat: Rc::clone(&view_quat),
         calibration_yaw: Rc::clone(&calibration_yaw),
         use_device_orientation: Rc::clone(&use_device_orientation),
-        filtered_yaw: Rc::clone(&filtered_yaw),
+        fusion_seeded: Rc::clone(&fusion_seeded),
     };
 
     let sky_widget = SkyViewWidget::new(
@@ -601,28 +598,40 @@ pub fn view_quat_heading_rad(view_quat: UnitQuaternion<f64>) -> f64 {
     -forward_world.x.atan2(forward_world.z)
 }
 
-/// Low-pass coefficient for the compass heading. Each
-/// `deviceorientation` event nudges the filtered yaw by this fraction
-/// of the difference, so a sustained input takes ~`1/κ` events to
-/// converge (≈ 20 events / ~300 ms at 60 Hz). Heavy by design — the
-/// raw magnetometer alpha bounces several degrees per frame on most
-/// phones, especially when the device is held near horizontal, and
-/// the user reported the view "jerking around" without smoothing.
-pub const COMPASS_FILTER_KAPPA: f64 = 0.05;
+/// Slerp weight applied to `view_quat` on each device-orientation
+/// event. At ~60 Hz events that gives a time constant of
+/// `−1 / (60 · ln(1 − w)) ≈ 160 ms` — the middle of the 150–250 ms
+/// band recommended for AR-style "point the phone at the sky" apps
+/// (see Valenti 2015, Madgwick 2010, and the 24ways device-orientation
+/// writeup).
+///
+/// Tuning notes:
+/// - `0.05` (~330 ms τ) feels mushy; the view lags real turns.
+/// - `0.10` (~160 ms τ) is the current choice — smooth but tracks.
+/// - `0.20` (~70 ms τ) starts to let raw magnetometer jitter through.
+pub const FUSION_SLERP_WEIGHT: f64 = 0.10;
 
-/// Apply a device-orientation reading to the shared `view_quat`,
-/// smoothing the compass heading heavily and passing the gyroscope-
-/// derived pitch through unfiltered.
+/// Apply a device-orientation reading to the shared `view_quat` using
+/// rigid-body sensor fusion: slerp the **whole** quaternion toward
+/// the target each event.
+///
+/// The earlier per-axis approach (low-pass alpha, pass beta through
+/// unfiltered) violated the geometric coupling between yaw and pitch
+/// — when the user turned the phone, pitch updated immediately and
+/// yaw arrived 200 ms later, producing the "view swings around
+/// later" feel reported on mobile. The fix is the standard one
+/// recommended in the sensor-fusion literature: filter the
+/// orientation **as a single rigid-body rotation**, not its Euler
+/// components. All axes lag by the same amount, so rotations stay
+/// coherent.
 ///
 /// Inputs are radians: `yaw_rad` is W3C alpha (CCW from north),
 /// `pitch_rad` is W3C beta minus 90° (so 0 = looking at horizon).
-/// Roll is intentionally dropped — including it adds horizon wobble
-/// without giving the user new control.
+/// Roll is intentionally dropped.
 ///
-/// The shell calls this on every `deviceorientation` event. The
-/// filter state lives in [`AstronomerHandles::filtered_yaw`] so the
-/// caller doesn't have to thread it through; first call seeds the
-/// filter with the raw value (no startup jerk).
+/// First event after the handle is created snaps to the target so
+/// the view doesn't visibly drift from identity to the device's
+/// real orientation over half a second on startup.
 pub fn apply_device_orientation(
     handles: &AstronomerHandles,
     yaw_rad: f64,
@@ -631,16 +640,22 @@ pub fn apply_device_orientation(
     if !handles.use_device_orientation.get() {
         return;
     }
-    let next_yaw = match handles.filtered_yaw.get() {
-        Some(prev) => crate::math::lerp_angle_rad(prev, yaw_rad, COMPASS_FILTER_KAPPA),
-        None => yaw_rad,
-    };
-    handles.filtered_yaw.set(Some(next_yaw));
     let q_yaw =
-        UnitQuaternion::from_axis_angle(&nalgebra::Vector3::y_axis(), next_yaw);
+        UnitQuaternion::from_axis_angle(&nalgebra::Vector3::y_axis(), yaw_rad);
     let q_pitch =
         UnitQuaternion::from_axis_angle(&nalgebra::Vector3::x_axis(), pitch_rad);
-    handles.view_quat.set(q_pitch * q_yaw);
+    let target = q_pitch * q_yaw;
+
+    let next = if handles.fusion_seeded.get() {
+        handles.view_quat.get().slerp(&target, FUSION_SLERP_WEIGHT)
+    } else {
+        // First event — snap so we don't visibly drift from identity
+        // (or from wherever a previous mouse drag left things)
+        // toward the device's actual orientation.
+        handles.fusion_seeded.set(true);
+        target
+    };
+    handles.view_quat.set(next);
     agg_gui::animation::request_draw();
 }
 
@@ -694,5 +709,74 @@ mod tests {
 
         let s = format_clock_label(1_700_000_000_000, 330);
         assert!(s.contains("local 03:43"), "got: {s}");
+    }
+
+    fn make_handles() -> AstronomerHandles {
+        AstronomerHandles {
+            latitude: Rc::new(Cell::new(0.0)),
+            longitude: Rc::new(Cell::new(0.0)),
+            timestamp_ms: Rc::new(Cell::new(0)),
+            view_quat: Rc::new(Cell::new(UnitQuaternion::<f64>::identity())),
+            calibration_yaw: Rc::new(Cell::new(0.0)),
+            use_device_orientation: Rc::new(Cell::new(true)),
+            fusion_seeded: Rc::new(Cell::new(false)),
+        }
+    }
+
+    /// First `apply_device_orientation` event should snap so the view
+    /// doesn't visibly drift from identity to the device's real
+    /// orientation over ~500 ms on startup. The user reported this
+    /// as a "settling" pause when first turning the compass on.
+    #[test]
+    fn apply_device_orientation_snaps_first_event() {
+        let h = make_handles();
+        apply_device_orientation(&h, 1.0, 0.5);
+        let q = h.view_quat.get();
+        let expected = UnitQuaternion::from_axis_angle(&nalgebra::Vector3::x_axis(), 0.5)
+            * UnitQuaternion::from_axis_angle(&nalgebra::Vector3::y_axis(), 1.0);
+        assert!(
+            q.angle_to(&expected) < 1e-9,
+            "first event must snap to target, off by {} rad",
+            q.angle_to(&expected)
+        );
+        assert!(h.fusion_seeded.get(), "fusion_seeded should flip true");
+    }
+
+    /// Subsequent events slerp toward the new target at the
+    /// FUSION_SLERP_WEIGHT fraction. This is the rigid-body
+    /// smoothing — both yaw and pitch lag by the same proportion,
+    /// so the view rotates coherently instead of yaw "swinging
+    /// around late" as it did under per-axis filtering.
+    #[test]
+    fn apply_device_orientation_slerps_after_first_event() {
+        let h = make_handles();
+        apply_device_orientation(&h, 1.0, 0.5); // snap
+        let q_first = h.view_quat.get();
+        apply_device_orientation(&h, 2.0, 0.5); // slerp
+        let q_second = h.view_quat.get();
+        let target = UnitQuaternion::from_axis_angle(&nalgebra::Vector3::x_axis(), 0.5)
+            * UnitQuaternion::from_axis_angle(&nalgebra::Vector3::y_axis(), 2.0);
+        // Distance from q_first to q_second should be ~10% of the
+        // total q_first → target distance.
+        let total = q_first.angle_to(&target);
+        let moved = q_first.angle_to(&q_second);
+        let ratio = moved / total;
+        assert!(
+            (ratio - FUSION_SLERP_WEIGHT).abs() < 0.02,
+            "slerp ratio should be ~{FUSION_SLERP_WEIGHT}, got {ratio:.3}"
+        );
+    }
+
+    /// `use_device_orientation = false` should leave view_quat alone
+    /// even when an event fires. Also must NOT flip `fusion_seeded`
+    /// — otherwise re-enabling the compass would silently skip the
+    /// startup snap on the next event.
+    #[test]
+    fn apply_device_orientation_no_op_when_disabled() {
+        let h = make_handles();
+        h.use_device_orientation.set(false);
+        apply_device_orientation(&h, 1.0, 0.5);
+        assert!(h.view_quat.get().angle() < 1e-9, "view_quat must not change");
+        assert!(!h.fusion_seeded.get(), "must not seed while disabled");
     }
 }
