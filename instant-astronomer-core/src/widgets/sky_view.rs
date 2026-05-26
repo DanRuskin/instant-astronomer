@@ -14,9 +14,11 @@
 //! horizon?" lookup the app was built for.
 
 mod hud;
+mod moon_phase;
 
 use crate::math::{
-    equatorial_to_horizontal, horizontal_to_cartesian, HorizontalCoords,
+    equatorial_to_horizontal, format_rise_set, horizontal_to_cartesian, rise_set_times,
+    HorizontalCoords, STANDARD_REFRACTION_ALT_RAD, SUN_HORIZON_ALT_RAD,
 };
 use crate::stars::{
     all_stars, calculate_solar_system_bodies, zodiac_date_range, CONSTELLATION_LINES,
@@ -57,6 +59,12 @@ pub(crate) struct PaintedBody {
     pub magnitude: f32,
     /// Optional extra description shown in the info card.
     pub detail: Option<String>,
+    /// Pre-formatted rise / set string for the reticle card, in the
+    /// observer's local time (DST applied). `None` for things that
+    /// don't have meaningful rise/set (e.g. constellations).
+    /// Format examples: `"Rises 18:42 · Sets 06:13"`, `"Always up"`,
+    /// `"Below horizon today"`.
+    pub rise_set: Option<String>,
 }
 
 /// Information about the currently selected (tapped) body, painted as an
@@ -112,6 +120,13 @@ pub struct SkyViewWidget {
 
     show_constellations: Rc<Cell<bool>>,
 
+    /// Closure that returns the device's UTC offset in minutes east of
+    /// UTC (DST-aware), supplied by the platform shell. Used to format
+    /// rise / set times in the reticle card as the user's local clock,
+    /// not UTC. Stored as `Rc<dyn Fn>` so SkyView doesn't need to know
+    /// the concrete `AstronomerPlatform` impl.
+    local_offset_fn: Rc<dyn Fn() -> i32>,
+
     /// Set on MouseDown, cleared on MouseUp / MouseLeave. While set we
     /// track whether the pointer drifted enough to count as a drag.
     down: Option<DownGesture>,
@@ -147,6 +162,7 @@ impl SkyViewWidget {
         view_quat: Rc<Cell<UnitQuaternion<f64>>>,
         calibration_yaw: Rc<Cell<f64>>,
         show_constellations: Rc<Cell<bool>>,
+        local_offset_fn: Rc<dyn Fn() -> i32>,
     ) -> Self {
         Self {
             bounds: Rect::default(),
@@ -158,6 +174,7 @@ impl SkyViewWidget {
             view_quat,
             calibration_yaw,
             show_constellations,
+            local_offset_fn,
             down: None,
             painted_bodies: RefCell::new(Vec::new()),
             painted_lines: RefCell::new(Vec::new()),
@@ -244,6 +261,7 @@ impl SkyViewWidget {
                 // use a sentinel that sorts after everything else.
                 magnitude: f32::INFINITY,
                 detail: Some(detail),
+                rise_set: None,
             }
         })
     }
@@ -300,6 +318,7 @@ impl SkyViewWidget {
         ctx.fill_text(text, p.x, p.y);
     }
 }
+
 
 /// Shortest distance from point `p` to the line segment `a → b`, plus
 /// the closest point on the segment. Used by [`SkyViewWidget::hit_test_tap`]
@@ -559,6 +578,9 @@ impl Widget for SkyViewWidget {
         // The painted alt=0 line + ground strip remain the visual
         // reference for which half is sky and which is ground.
         ctx.set_font(Arc::clone(&self.font));
+        let now_ms = self.timestamp_ms.get();
+        let local_offset = (self.local_offset_fn)();
+        let lng_rad = self.longitude.get().to_radians();
         for star in all_stars() {
             let horiz = equatorial_to_horizontal(star.coords, lat, lst);
             let Some(pos) = self.project_horizontal(horiz, &rot, center, focal_length) else {
@@ -588,6 +610,13 @@ impl Widget for SkyViewWidget {
                 );
             }
 
+            let rs = rise_set_times(
+                star.coords,
+                lat,
+                lng_rad,
+                now_ms,
+                STANDARD_REFRACTION_ALT_RAD,
+            );
             painted.push(PaintedBody {
                 name: star.name.to_string(),
                 pos,
@@ -598,6 +627,7 @@ impl Widget for SkyViewWidget {
                     star.coords.ra.to_degrees() / 15.0,
                     star.coords.dec.to_degrees(),
                 )),
+                rise_set: Some(format_rise_set(rs, local_offset)),
             });
         }
 
@@ -608,7 +638,12 @@ impl Widget for SkyViewWidget {
         // to find ("where is the Sun right now?") and panning down to see
         // a planet that just set should still resolve it. Behind-camera
         // (z<=0.05) is the only thing project_horizontal skips.
-        for body in calculate_solar_system_bodies(self.timestamp_ms.get()) {
+        let bodies = calculate_solar_system_bodies(now_ms);
+        // Pull the Sun's coords out once so the Moon-phase painter can
+        // compute the bright-limb direction without re-running the
+        // ephemeris.
+        let sun_coords = bodies.iter().find(|b| b.name == "Sun").map(|b| b.coords);
+        for body in &bodies {
             let horiz = equatorial_to_horizontal(body.coords, lat, lst);
             let Some(pos) = self.project_horizontal(horiz, &rot, center, focal_length) else {
                 continue;
@@ -626,17 +661,25 @@ impl Widget for SkyViewWidget {
                 "Mars" | "Saturn" => 5.5,
                 _ => 5.0,
             };
-            // Sun and Moon get a soft glow halo.
+            // Soft glow halo for the bodies that deserve to "pop".
             if body.name == "Sun" {
                 Self::fill_disc(ctx, pos, radius + 6.0, Color::from_rgba8(255, 200, 50, 60));
             } else if body.name == "Moon" {
                 Self::fill_disc(ctx, pos, radius + 3.0, Color::from_rgba8(220, 220, 240, 50));
             } else if body.name == "Venus" || body.name == "Jupiter" {
-                // The two "evening star" objects deserve their own glow so
-                // they read at a glance — the entire reason this app exists.
                 Self::fill_disc(ctx, pos, radius + 3.0, Color::from_rgba8(255, 240, 200, 60));
             }
-            Self::fill_disc(ctx, pos, radius, body.color);
+
+            // The Moon gets a phase rendering; everything else is a
+            // plain coloured disc.
+            if body.name == "Moon" {
+                let phase_info = sun_coords.map(|sc| {
+                    moon_phase::moon_phase_info(sc, body.coords, lat, lst, &rot)
+                });
+                moon_phase::fill_moon_phase(ctx, pos, radius, phase_info);
+            } else {
+                Self::fill_disc(ctx, pos, radius, body.color);
+            }
             Self::draw_text(
                 ctx,
                 Point::new(pos.x + radius + 4.0, pos.y - 4.0),
@@ -645,8 +688,17 @@ impl Widget for SkyViewWidget {
                 body.name,
             );
 
-            let detail = if body.name == "Sun" || body.name == "Moon" {
+            let detail = if body.name == "Sun" {
                 Some(format!("Solar System · mag {:.1}", body.magnitude))
+            } else if body.name == "Moon" {
+                let illum = sun_coords
+                    .map(|sc| moon_phase::moon_illumination(sc, body.coords))
+                    .unwrap_or(0.0);
+                Some(format!(
+                    "Solar System · mag {:.1} · {:.0}% lit",
+                    body.magnitude,
+                    illum * 100.0
+                ))
             } else {
                 Some(format!(
                     "Planet · mag {:.1} · alt {:+.0}° · az {:.0}°",
@@ -655,11 +707,22 @@ impl Widget for SkyViewWidget {
                     horiz.az.to_degrees(),
                 ))
             };
+            // Sun gets refraction + apparent-radius horizon offset; the
+            // rest just refraction. Rise/set is pre-formatted in the
+            // user's local time so the card doesn't have to know the
+            // platform offset.
+            let horizon_alt = if body.name == "Sun" {
+                SUN_HORIZON_ALT_RAD
+            } else {
+                STANDARD_REFRACTION_ALT_RAD
+            };
+            let rs = rise_set_times(body.coords, lat, lng_rad, now_ms, horizon_alt);
             painted.push(PaintedBody {
                 name: body.name.to_string(),
                 pos,
                 magnitude: body.magnitude,
                 detail,
+                rise_set: Some(format_rise_set(rs, local_offset)),
             });
         }
 

@@ -261,8 +261,12 @@ pub(super) fn paint_centre_reticle(
     // the closest constellation line whose closest-point lies inside
     // the reticle. AABB pre-check skips segments that obviously can't
     // contain the centre.
-    let (name, detail) = if let Some((_, body)) = best {
-        (body.name.clone(), format!("mag {:+.1}", body.magnitude))
+    let (name, details) = if let Some((_, body)) = best {
+        let mut details = vec![format!("mag {:+.1}", body.magnitude)];
+        if let Some(rs) = &body.rise_set {
+            details.push(rs.clone());
+        }
+        (body.name.clone(), details)
     } else {
         let mut best_seg: Option<(f64, &PaintedSegment)> = None;
         for seg in painted_lines {
@@ -291,33 +295,45 @@ pub(super) fn paint_centre_reticle(
             Some(range) => format!("Zodiac · {range}"),
             None => String::from("Constellation"),
         };
-        (seg.constellation_name.to_string(), detail)
+        (seg.constellation_name.to_string(), vec![detail])
     };
 
-    paint_reticle_card(ctx, font, w, centre, &name, &detail);
+    paint_reticle_card(ctx, font, w, centre, &name, &details);
 }
 
-/// Paint the two-line card above the reticle. Pulled out so the
+/// Paint the multi-line card above the reticle. Pulled out so the
 /// body branch and the constellation branch share the exact same
 /// layout — same fonts, same colors, same anchor — so the user can't
-/// visually tell from the card chrome which kind of hit it was.
+/// visually tell from the card chrome which kind of hit it was. The
+/// detail array supplies any number of secondary lines (magnitude,
+/// rise/set, zodiac date range) painted top-to-bottom underneath
+/// the name.
 fn paint_reticle_card(
     ctx: &mut dyn DrawCtx,
     font: Arc<Font>,
     w: f64,
     centre: Point,
     name: &str,
-    detail: &str,
+    details: &[String],
 ) {
     ctx.set_font(font);
     let name_size = 14.0_f64;
     let detail_size = 11.0_f64;
     let pad_x = 12.0_f64;
     let pad_y = 9.0_f64;
-    let line_gap = 5.0_f64;
+    let line_gap = 4.0_f64;
     let approx = |s: &str, sz: f64| (s.chars().count() as f64) * sz * 0.6 + pad_x * 2.0;
-    let card_w = approx(name, name_size).max(approx(detail, detail_size));
-    let card_h = name_size + detail_size + line_gap + pad_y * 2.0;
+    let mut card_w = approx(name, name_size);
+    for d in details {
+        card_w = card_w.max(approx(d, detail_size));
+    }
+    let detail_lines = details.len();
+    let detail_block_h = if detail_lines == 0 {
+        0.0
+    } else {
+        detail_lines as f64 * detail_size + (detail_lines as f64 - 1.0).max(0.0) * line_gap
+    };
+    let card_h = name_size + line_gap + detail_block_h + pad_y * 2.0;
     let card_x = (centre.x - card_w / 2.0).clamp(8.0, w - card_w - 8.0);
     let card_top = centre.y - RETICLE_RADIUS - 6.0;
     let card_y = (card_top - card_h).max(8.0);
@@ -332,6 +348,8 @@ fn paint_reticle_card(
     ctx.rounded_rect(card_x, card_y, card_w, card_h, 7.0);
     ctx.stroke();
 
+    // Y-up: text baselines measured from the TOP of the card down so
+    // the name reads first.
     ctx.set_fill_color(Color::from_rgb8(255, 235, 150));
     ctx.set_font_size(name_size);
     let name_baseline = card_y + card_h - pad_y - name_size * 0.25;
@@ -339,8 +357,13 @@ fn paint_reticle_card(
 
     ctx.set_fill_color(Color::from_rgb8(200, 205, 225));
     ctx.set_font_size(detail_size);
-    let detail_baseline = card_y + pad_y - detail_size * 0.15;
-    ctx.fill_text(detail, card_x + pad_x, detail_baseline);
+    for (i, line) in details.iter().enumerate() {
+        // First detail line sits just below the name; subsequent lines
+        // descend by detail_size + line_gap each.
+        let dy = (i as f64) * (detail_size + line_gap);
+        let baseline = name_baseline - name_size - line_gap - dy;
+        ctx.fill_text(line, card_x + pad_x, baseline);
+    }
 }
 
 /// Paint the projected `alt = 0` horizon line as a dim curve across

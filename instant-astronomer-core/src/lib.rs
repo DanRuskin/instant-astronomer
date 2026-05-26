@@ -121,6 +121,14 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
     font: Arc<Font>,
     platform: P,
 ) -> (App, AstronomerHandles) {
+    let platform = Rc::new(platform);
+    // Closure the SkyView calls every frame to format rise/set in the
+    // user's local time. Wraps the platform Rc by clone — the
+    // platform owns the OS / browser timezone API.
+    let local_offset_fn: Rc<dyn Fn() -> i32> = {
+        let p = Rc::clone(&platform);
+        Rc::new(move || p.local_offset_minutes())
+    };
     // Default coordinates: Royal Observatory Greenwich — neutral starting
     // point until the platform geolocation hook resolves.
     let latitude = Rc::new(Cell::new(51.4769));
@@ -160,12 +168,13 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
         Rc::clone(&view_quat),
         Rc::clone(&calibration_yaw),
         Rc::clone(&show_constellations),
+        Rc::clone(&local_offset_fn),
     );
     let tape_widget = HorizonTapeWidget::new(Arc::clone(&font), Rc::clone(&view_quat));
 
     let panel = build_control_panel(
         Arc::clone(&font),
-        platform,
+        Rc::clone(&platform),
         Rc::clone(&latitude),
         Rc::clone(&longitude),
         Rc::clone(&timestamp_ms),
@@ -192,7 +201,7 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
 #[allow(clippy::too_many_arguments)]
 fn build_control_panel<P: AstronomerPlatform>(
     font: Arc<Font>,
-    platform: P,
+    platform: Rc<P>,
     latitude: Rc<Cell<f64>>,
     longitude: Rc<Cell<f64>>,
     timestamp_ms: Rc<Cell<i64>>,
@@ -204,7 +213,6 @@ fn build_control_panel<P: AstronomerPlatform>(
     search_text: Rc<std::cell::RefCell<String>>,
     search_status: Rc<std::cell::RefCell<String>>,
 ) -> Container {
-    let platform = Rc::new(platform);
     let icon_font = load_icon_font();
     // On mobile-touch viewports the action buttons collapse to icon-
     // only so the bottom bar has any chance of fitting on a 400 px

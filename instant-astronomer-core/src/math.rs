@@ -154,6 +154,119 @@ pub fn compute_local_sidereal_time(timestamp_ms: i64, longitude_rad: f64) -> f64
     lst
 }
 
+/// Geometric horizon altitude (radians) used by [`rise_set_times`] for a
+/// "standard" star — i.e. atmospheric refraction lifts an object roughly
+/// 34' above the geometric horizon at rise/set, so we report the time it
+/// reaches apparent altitude -34' rather than 0°.
+pub const STANDARD_REFRACTION_ALT_RAD: f64 = -0.009_890_2; // -0.566° in rad
+
+/// Horizon altitude for the Sun's *upper limb*: -0.5667° refraction
+/// minus 0.2667° apparent radius = -0.8333°.
+pub const SUN_HORIZON_ALT_RAD: f64 = -0.014_543_4; // -0.833° in rad
+
+/// Result of a rise/set lookup. `Times` carries Unix epoch ms for the
+/// rise/set events bracketing `around_ts_ms`; the other two variants
+/// describe a body that's currently in a circumpolar state at the
+/// observer's latitude.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RiseSet {
+    /// The body crosses the horizon during the 24h window around the
+    /// query time. Both timestamps are in Unix epoch ms.
+    Times { rise_ms: i64, set_ms: i64 },
+    /// The body is above the horizon all day at this latitude.
+    AlwaysUp,
+    /// The body never rises at this latitude today.
+    NeverRises,
+}
+
+/// Approximate rise / set times for a body at (`coords.ra`, `coords.dec`),
+/// observed from (`latitude_rad`, `longitude_rad`, east positive), near
+/// the time given by `around_ts_ms`. `horizon_alt_rad` is the apparent
+/// altitude at which the event is reported — pass
+/// [`STANDARD_REFRACTION_ALT_RAD`] for stars / planets and
+/// [`SUN_HORIZON_ALT_RAD`] for the Sun's upper limb.
+///
+/// This is a single-shot calculation that assumes the body's equatorial
+/// coordinates are constant across the 24h window. That's exact for
+/// stars, fine for planets (sub-degree drift), and good to a few
+/// minutes for the Moon (whose RA / Dec moves ~13°/day). For naked-
+/// eye stargazing accuracy the latter is good enough.
+pub fn rise_set_times(
+    coords: EquatorialCoords,
+    latitude_rad: f64,
+    longitude_rad: f64,
+    around_ts_ms: i64,
+    horizon_alt_rad: f64,
+) -> RiseSet {
+    let cos_h0 = (horizon_alt_rad.sin() - latitude_rad.sin() * coords.dec.sin())
+        / (latitude_rad.cos() * coords.dec.cos());
+    if cos_h0 > 1.0 {
+        return RiseSet::NeverRises;
+    }
+    if cos_h0 < -1.0 {
+        return RiseSet::AlwaysUp;
+    }
+    let h0 = cos_h0.acos();
+
+    // LST values when the body is at the rise / set horizon.
+    let two_pi = 2.0 * PI;
+    let lst_rise = ((coords.ra - h0) % two_pi + two_pi) % two_pi;
+    let lst_set = ((coords.ra + h0) % two_pi + two_pi) % two_pi;
+
+    let rise_ms = unix_ms_for_lst(lst_rise, longitude_rad, around_ts_ms);
+    let set_ms = unix_ms_for_lst(lst_set, longitude_rad, around_ts_ms);
+    RiseSet::Times { rise_ms, set_ms }
+}
+
+/// Format a [`RiseSet`] for display in the user's local time. Uses
+/// the platform-reported UTC offset in minutes (DST applied) so the
+/// times read as wall-clock at the observer's location, not UTC.
+/// Examples:
+/// - `"Rises 18:42 · Sets 06:13"`
+/// - `"Always up"` / `"Below horizon today"`
+pub fn format_rise_set(rs: RiseSet, offset_minutes: i32) -> String {
+    match rs {
+        RiseSet::AlwaysUp => String::from("Always up"),
+        RiseSet::NeverRises => String::from("Below horizon today"),
+        RiseSet::Times { rise_ms, set_ms } => format!(
+            "Rises {} · Sets {}",
+            format_hhmm(rise_ms, offset_minutes),
+            format_hhmm(set_ms, offset_minutes),
+        ),
+    }
+}
+
+/// Format a Unix-ms timestamp as `HH:MM` in the observer's local
+/// (offset-adjusted) wall clock. Wraps cleanly across day boundaries.
+pub fn format_hhmm(unix_ms: i64, offset_minutes: i32) -> String {
+    let local_ms = unix_ms + (offset_minutes as i64) * 60_000;
+    let h = ((local_ms / 3_600_000) % 24 + 24) % 24;
+    let m = ((local_ms / 60_000) % 60 + 60) % 60;
+    format!("{h:02}:{m:02}")
+}
+
+/// Invert [`compute_local_sidereal_time`] linearly: find the Unix ms
+/// closest to `around_ts_ms` for which the local sidereal time equals
+/// `target_lst_rad`. Pure linear approximation — GMST advances at
+/// ~360.98565° per UT day, so the higher-order T² term in the full
+/// IAU formula contributes <1 ms across any 24h window and is dropped
+/// here for clarity.
+fn unix_ms_for_lst(target_lst_rad: f64, longitude_rad: f64, around_ts_ms: i64) -> i64 {
+    let now_lst_rad = compute_local_sidereal_time(around_ts_ms, longitude_rad);
+    let mut delta = target_lst_rad - now_lst_rad;
+    // Wrap to [-π, π] so we pick the nearest occurrence (within ±12h).
+    while delta > PI {
+        delta -= 2.0 * PI;
+    }
+    while delta < -PI {
+        delta += 2.0 * PI;
+    }
+    // Sidereal day = 86_164.0905 s ≈ 23h56m4.0905s. So a 2π gain in
+    // LST takes one sidereal day; per-radian it's 86_164 / (2π) s.
+    let seconds_per_rad: f64 = 86_164.0905 / (2.0 * PI);
+    around_ts_ms + (delta * seconds_per_rad * 1000.0) as i64
+}
+
 /// Transform Equatorial coordinates (RA/Dec) to Horizontal coordinates (Alt/Az).
 ///
 /// Under the following equations:
@@ -420,6 +533,55 @@ mod tests {
             az += step;
         }
         assert!(samples_in_front > 0, "expected some alt=0 samples to project");
+    }
+
+    /// On the equator with the body on the meridian *right now*, the
+    /// rise and set events should bracket the current time symmetrically
+    /// — roughly 6h before and after now, giving a 12h above-horizon
+    /// window.
+    #[test]
+    fn rise_set_equator_yields_12h_window() {
+        let now = 1_767_268_800_000_i64; // 2026-01-01T12:00:00Z
+        let lat = 0.0;
+        let lng = 0.0;
+        let lst_now = compute_local_sidereal_time(now, lng);
+        let coords = EquatorialCoords { ra: lst_now, dec: 0.0 };
+        match rise_set_times(coords, lat, lng, now, STANDARD_REFRACTION_ALT_RAD) {
+            RiseSet::Times { rise_ms, set_ms } => {
+                let span_h = (set_ms - rise_ms) as f64 / 3_600_000.0;
+                assert!(
+                    (span_h - 12.0).abs() < 0.05,
+                    "expected ~12h span at the equator, got {span_h:.3}h"
+                );
+                assert!(rise_ms < now, "rise should be in the past");
+                assert!(set_ms > now, "set should be in the future");
+            }
+            other => panic!("expected Times, got {other:?}"),
+        }
+    }
+
+    /// At a high northern latitude, a body at high northern declination
+    /// is circumpolar; a body at deep southern declination never rises.
+    /// Pins down the cos(H₀) branch logic.
+    #[test]
+    fn rise_set_handles_circumpolar_states() {
+        let lat = (70.0_f64).to_radians();
+        let north = EquatorialCoords {
+            ra: 0.0,
+            dec: (85.0_f64).to_radians(),
+        };
+        assert_eq!(
+            rise_set_times(north, lat, 0.0, 0, STANDARD_REFRACTION_ALT_RAD),
+            RiseSet::AlwaysUp
+        );
+        let south = EquatorialCoords {
+            ra: 0.0,
+            dec: (-85.0_f64).to_radians(),
+        };
+        assert_eq!(
+            rise_set_times(south, lat, 0.0, 0, STANDARD_REFRACTION_ALT_RAD),
+            RiseSet::NeverRises
+        );
     }
 
     /// Sanity check that incremental quaternion composition produces
