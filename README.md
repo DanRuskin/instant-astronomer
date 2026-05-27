@@ -1,5 +1,7 @@
 # Instant-Astronomer
 
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy_Me_A_Coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/larsbrubaker)
+
 [![Instant-Astronomer — play in your browser](readme_hero.png)](https://larsbrubaker.github.io/instant-astronomer/)
 
 > **▶︎ [Open it in your browser](https://larsbrubaker.github.io/instant-astronomer/)**
@@ -75,6 +77,21 @@ See [`implementation.md`](implementation.md) for the original design spec —
 the three-phase delivery plan, the Yale Bright Star Catalog / Keplerian /
 Meeus pipelines, and the SQLite-backed city search the asset payload is
 moving toward.
+
+## Prior art and inspiration
+
+- **[Sky Map (stardroid)](https://github.com/sky-map-team/stardroid)** by
+  the Sky Map team — the mature, Google-incubated Android star-map app
+  that set the bar for "point your phone at the sky" interaction. Its
+  sensor-fusion design (in particular the
+  [`ExponentiallyWeightedSmoother`](https://github.com/sky-map-team/stardroid/blob/master/app/src/main/java/com/google/android/stardroid/util/smoothers/ExponentiallyWeightedSmoother.java)
+  with non-linear magnitude-dependent gain on the magnetometer channel,
+  and the rotation-matrix-from-vectors path in
+  [`AstronomerModelImpl`](https://github.com/sky-map-team/stardroid/blob/master/app/src/main/java/com/google/android/stardroid/control/AstronomerModelImpl.kt))
+  directly informs the quaternion smoothing in
+  [`apply_device_orientation`](instant-astronomer-core/src/lib.rs) — yaw
+  rotations get magnitude-gain crushing to kill compass jitter, while
+  tilt rotations pass through unfiltered for responsive tracking.
 
 ## License
 
