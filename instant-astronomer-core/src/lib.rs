@@ -598,32 +598,68 @@ pub fn view_quat_heading_rad(view_quat: UnitQuaternion<f64>) -> f64 {
     -forward_world.x.atan2(forward_world.z)
 }
 
-/// Slerp weight applied to `view_quat` on each device-orientation
-/// event. At ~60 Hz events that gives a time constant of
-/// `−1 / (60 · ln(1 − w)) ≈ 160 ms` — the middle of the 150–250 ms
-/// band recommended for AR-style "point the phone at the sky" apps
-/// (see Valenti 2015, Madgwick 2010, and the 24ways device-orientation
-/// writeup).
+/// Slerp weight for **tilt-dominated** events (pitch / roll). Tilt is
+/// driven by the device's accelerometer — physical and stable — so we
+/// track it aggressively. Matches the high-alpha (0.7) damping Sky Map
+/// applies to its `TYPE_ACCELEROMETER` channel.
+pub const FUSION_TILT_WEIGHT: f64 = 0.30;
+
+/// Angle gap (radians) at which a **yaw-dominated** event reaches the
+/// full tilt-weight pass-through. Below this knee, the slerp weight
+/// scales quadratically with the gap — tiny compass jitter (a few
+/// tenths of a degree) is essentially frozen, while genuine head
+/// turns pass through. Mirrors the `ExponentiallyWeightedSmoother`
+/// shape Sky Map runs on its magnetometer channel, lifted to
+/// quaternion space.
+pub const FUSION_YAW_KNEE_RAD: f64 = 5.0 * std::f64::consts::PI / 180.0;
+
+/// Slerp weight for a sensor-fusion event, computed from the
+/// rotation needed to take `current` → `target`. Single coherent
+/// rotation, single weight — no per-Euler-axis filtering — but the
+/// weight depends on **what kind** of rotation it is.
 ///
-/// Tuning notes:
-/// - `0.05` (~330 ms τ) feels mushy; the view lags real turns.
-/// - `0.10` (~160 ms τ) is the current choice — smooth but tracks.
-/// - `0.20` (~70 ms τ) starts to let raw magnetometer jitter through.
-pub const FUSION_SLERP_WEIGHT: f64 = 0.10;
+/// Yaw rotations (axis ≈ world-up) get magnitude-gain smoothing:
+/// tiny gaps are crushed, large gaps follow. Tilt rotations (axis ≈
+/// horizontal) get the full `FUSION_TILT_WEIGHT`. Mixed axes
+/// linearly interpolate, so the slerp remains rigid-body coherent —
+/// no risk of yaw lagging pitch when the user turns the phone.
+fn fusion_slerp_weight(
+    current: UnitQuaternion<f64>,
+    target: UnitQuaternion<f64>,
+) -> f64 {
+    let delta = target * current.inverse();
+    let angle = delta.angle();
+    if angle < 1e-9 {
+        return 0.0;
+    }
+    let yaw_share = delta.axis().map(|a| a.y.abs()).unwrap_or(0.0);
+    let yaw_gain = (angle / FUSION_YAW_KNEE_RAD).powi(2).min(1.0);
+    let yaw_weight = FUSION_TILT_WEIGHT * yaw_gain;
+    yaw_share * yaw_weight + (1.0 - yaw_share) * FUSION_TILT_WEIGHT
+}
 
 /// Apply a device-orientation reading to the shared `view_quat` using
 /// rigid-body sensor fusion: slerp the **whole** quaternion toward
-/// the target each event.
+/// the target each event, with a magnitude- and axis-dependent weight.
 ///
 /// The earlier per-axis approach (low-pass alpha, pass beta through
 /// unfiltered) violated the geometric coupling between yaw and pitch
 /// — when the user turned the phone, pitch updated immediately and
 /// yaw arrived 200 ms later, producing the "view swings around
-/// later" feel reported on mobile. The fix is the standard one
-/// recommended in the sensor-fusion literature: filter the
-/// orientation **as a single rigid-body rotation**, not its Euler
-/// components. All axes lag by the same amount, so rotations stay
-/// coherent.
+/// later" feel reported on mobile. Filtering the orientation as a
+/// single rigid-body rotation fixes that, but a fixed slerp weight
+/// trades off compass jitter against responsive tilt tracking.
+///
+/// Sky Map (sky-map-team/stardroid) resolves the same trade-off by
+/// running separate damping on the gravity channel (alpha 0.7,
+/// responsive) and the magnetometer channel (alpha 0.05 plus a cubic
+/// `ExponentiallyWeightedSmoother` that crushes sub-degree jitter).
+/// We can't separate the channels — the browser hands us a fused
+/// Euler triple — but we can recover the same effect by looking at
+/// the **axis** of the current→target rotation: if it points along
+/// world-up the change is yaw-like (compass-driven, smooth hard);
+/// otherwise it's tilt-like (gravity-driven, follow fast). See
+/// [`fusion_slerp_weight`] for the math.
 ///
 /// Inputs are radians: `yaw_rad` is W3C alpha (CCW from north),
 /// `pitch_rad` is W3C beta minus 90° (so 0 = looking at horizon).
@@ -647,7 +683,9 @@ pub fn apply_device_orientation(
     let target = q_pitch * q_yaw;
 
     let next = if handles.fusion_seeded.get() {
-        handles.view_quat.get().slerp(&target, FUSION_SLERP_WEIGHT)
+        let current = handles.view_quat.get();
+        let weight = fusion_slerp_weight(current, target);
+        current.slerp(&target, weight)
     } else {
         // First event — snap so we don't visibly drift from identity
         // (or from wherever a previous mouse drag left things)
@@ -742,28 +780,64 @@ mod tests {
         assert!(h.fusion_seeded.get(), "fusion_seeded should flip true");
     }
 
-    /// Subsequent events slerp toward the new target at the
-    /// FUSION_SLERP_WEIGHT fraction. This is the rigid-body
-    /// smoothing — both yaw and pitch lag by the same proportion,
-    /// so the view rotates coherently instead of yaw "swinging
-    /// around late" as it did under per-axis filtering.
+    /// A large yaw-dominated event after the snap should pass
+    /// through at `FUSION_TILT_WEIGHT` — well above the knee, the
+    /// quadratic gain saturates at 1.0 so yaw weight equals tilt
+    /// weight. The slerp is still a single rigid-body rotation.
     #[test]
-    fn apply_device_orientation_slerps_after_first_event() {
+    fn apply_device_orientation_slerps_large_yaw_at_full_weight() {
         let h = make_handles();
         apply_device_orientation(&h, 1.0, 0.5); // snap
         let q_first = h.view_quat.get();
-        apply_device_orientation(&h, 2.0, 0.5); // slerp
+        apply_device_orientation(&h, 2.0, 0.5); // 1 rad yaw gap, well above knee
         let q_second = h.view_quat.get();
         let target = UnitQuaternion::from_axis_angle(&nalgebra::Vector3::x_axis(), 0.5)
             * UnitQuaternion::from_axis_angle(&nalgebra::Vector3::y_axis(), 2.0);
-        // Distance from q_first to q_second should be ~10% of the
-        // total q_first → target distance.
         let total = q_first.angle_to(&target);
         let moved = q_first.angle_to(&q_second);
         let ratio = moved / total;
         assert!(
-            (ratio - FUSION_SLERP_WEIGHT).abs() < 0.02,
-            "slerp ratio should be ~{FUSION_SLERP_WEIGHT}, got {ratio:.3}"
+            (ratio - FUSION_TILT_WEIGHT).abs() < 0.02,
+            "large-gap slerp ratio should be ~{FUSION_TILT_WEIGHT}, got {ratio:.3}"
+        );
+    }
+
+    /// Sub-degree yaw "jitter" — typical of magnetometer noise — must
+    /// be crushed. Mirrors Sky Map's `ExponentiallyWeightedSmoother`
+    /// behaviour on its magnetometer channel: quadratic gain below
+    /// the knee renders compass noise effectively frozen.
+    #[test]
+    fn apply_device_orientation_crushes_small_yaw_jitter() {
+        let h = make_handles();
+        apply_device_orientation(&h, 0.0, 0.0); // snap to identity
+        let q_seed = h.view_quat.get();
+        let jitter = 0.5_f64.to_radians();
+        apply_device_orientation(&h, jitter, 0.0);
+        let moved = q_seed.angle_to(&h.view_quat.get());
+        let ratio = moved / jitter;
+        // (0.5° / 5°)² * 0.30 = 0.003 — view barely moves.
+        assert!(
+            ratio < 0.01,
+            "small yaw jitter must be crushed, ratio={ratio:.4}"
+        );
+    }
+
+    /// A tilt-dominated event (gravity is the stable channel) must
+    /// pass through at full `FUSION_TILT_WEIGHT` even for small
+    /// angles. We don't deadband pitch — that's what gave the
+    /// "settles late" feel on real motion.
+    #[test]
+    fn apply_device_orientation_tracks_small_tilt() {
+        let h = make_handles();
+        apply_device_orientation(&h, 0.0, 0.0); // snap to identity
+        let q_seed = h.view_quat.get();
+        let tilt = 0.5_f64.to_radians();
+        apply_device_orientation(&h, 0.0, tilt);
+        let moved = q_seed.angle_to(&h.view_quat.get());
+        let ratio = moved / tilt;
+        assert!(
+            (ratio - FUSION_TILT_WEIGHT).abs() < 0.02,
+            "small tilt should track at {FUSION_TILT_WEIGHT}, got {ratio:.3}"
         );
     }
 
