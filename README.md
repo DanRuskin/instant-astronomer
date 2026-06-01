@@ -48,6 +48,48 @@ cargo run -p instant-astronomer-native
 wasm-pack build instant-astronomer-wasm --target web --out-dir ../demo/public/pkg --no-typescript
 ```
 
+## Testing on a phone (LAN, with sensors)
+
+The web build uses `navigator.geolocation` and `DeviceOrientation`, both of
+which require a **secure context (HTTPS)** on a real device. The Vite dev
+server is configured to bind to all interfaces and serve a self-signed cert
+([`demo/vite.config.ts`](demo/vite.config.ts)), so a phone on the same Wi-Fi
+can reach it and the sensors work.
+
+Prerequisites (one-time): a JS runtime — [Bun](https://bun.sh) is what the
+repo's lockfile + CI use — plus `cargo install cargo-watch`.
+
+```powershell
+cd demo
+bun install                 # one-time
+
+# Terminal 1 — rebuild the wasm pkg on every Rust edit
+bun run wasm:watch          # cargo-watch -> wasm-pack into demo/public/pkg
+
+# Terminal 2 — HTTPS dev server bound to the LAN
+bun run dev                 # prints a https://<your-lan-ip>:5173/ Network URL
+```
+
+On the phone, open the printed **Network** URL (e.g.
+`https://192.168.x.x:5173/`) and accept the self-signed-cert warning once.
+After a Rust change, `wasm:watch` rebuilds the pkg — just reload the page on
+the phone. `bun run wasm` does a single (non-watching) build.
+
+### Sending a phone screenshot back to the dev machine
+
+When the dev server is running it also serves a small screenshot relay at
+**`/__shot`** (dev only — it's stripped from production builds). To capture
+what the phone is actually rendering:
+
+1. Take a normal OS screenshot on the phone.
+2. Open `https://<your-lan-ip>:5173/__shot` in the phone browser.
+3. Pick the screenshot and tap **Upload**.
+
+The image is saved on the dev machine under `demo/shots/` (gitignored), where
+you — or a coding agent pair-debugging the mobile layout — can open it
+directly. Implemented in
+[`demo/vite-plugins/phone-shots.ts`](demo/vite-plugins/phone-shots.ts).
+
 ## Workspace layout
 
 ```

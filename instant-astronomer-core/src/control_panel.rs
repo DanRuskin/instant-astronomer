@@ -11,8 +11,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use agg_gui::color::Color;
-use agg_gui::layout_props::Insets;
+use agg_gui::layout_props::{HAnchor, Insets, VAnchor};
 use agg_gui::text::Font;
+use agg_gui::widget::Widget;
 use agg_gui::widgets::{Button, Checkbox, Conditional, Container, FlexColumn, FlexRow, TextField};
 use nalgebra::UnitQuaternion;
 
@@ -25,8 +26,24 @@ use crate::widgets::status_text::StatusText;
 use crate::widgets::wrapping_row::WrappingRow;
 use crate::{cities, AstronomerPlatform};
 
-/// Build the bottom configuration tray (geolocation button, constellation
-/// toggle, coordinate readout, city search).
+/// The assembled control surface. Desktop puts everything in the bottom
+/// tray; mobile pulls the interactive buttons out into a vertical
+/// left-edge rail so they're thumb-reachable, leaving only the
+/// coordinate / clock readouts (and the conditional city-search row) in
+/// the bottom tray.
+pub(crate) struct ControlPanel {
+    /// Mobile-only vertical button rail anchored to the left edge.
+    /// `None` on desktop, where the buttons live in `bottom`.
+    pub left_rail: Option<Box<dyn Widget>>,
+    /// Bottom tray container (full controls on desktop; readouts +
+    /// search on mobile).
+    pub bottom: Container,
+}
+
+/// Build the configuration controls (geolocation button, constellation
+/// toggle, coordinate readout, city search). On mobile the interactive
+/// buttons are returned in [`ControlPanel::left_rail`]; on desktop they
+/// stay in [`ControlPanel::bottom`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_control_panel<P: AstronomerPlatform>(
     font: Arc<Font>,
@@ -37,12 +54,13 @@ pub(crate) fn build_control_panel<P: AstronomerPlatform>(
     view_quat: Rc<Cell<UnitQuaternion<f64>>>,
     calibration_yaw: Rc<Cell<f64>>,
     show_constellations: Rc<Cell<bool>>,
+    show_controls: Rc<Cell<bool>>,
     use_geolocation: Rc<Cell<bool>>,
     use_device_orientation: Rc<Cell<bool>>,
     search_text: Rc<std::cell::RefCell<String>>,
     search_status: Rc<std::cell::RefCell<String>>,
     toast: crate::toast::ToastCell,
-) -> Container {
+) -> ControlPanel {
     let icon_font = load_icon_font();
     // On mobile-touch viewports the action buttons collapse to icon-
     // only so the bottom bar has any chance of fitting on a 400 px
@@ -300,19 +318,63 @@ pub(crate) fn build_control_panel<P: AstronomerPlatform>(
     // `with_compact()`, so packing them closer keeps the row from
     // wrapping for a few more pixels of viewport width.
     let h_gap = if mobile { 6.0 } else { 12.0 };
-    // Layout: toggles up front as a single group (subtle/grey when
-    // off, accent/blue when on — visually obvious which are active),
-    // then the momentary action buttons, then status text.
-    let row_1 = WrappingRow::new()
-        .with_gap(h_gap, 6.0)
-        .add(geo_toggle)
-        .add(constellation_toggle)
-        .add(compass_toggle)
-        .add(Box::new(geo_button))
-        .add(Box::new(calibrate_button))
-        .add(Box::new(fullscreen_button))
-        .add(Box::new(coord_label))
-        .add(Box::new(time_label));
+    // Layout differs by form factor:
+    //   * Desktop — one bottom `WrappingRow`: toggles, then the
+    //     momentary action buttons, then the status readouts.
+    //   * Mobile — the six interactive buttons move into a vertical
+    //     left-edge rail (`left_rail`), so the bottom tray keeps just
+    //     the coordinate / clock readouts (plus the conditional search
+    //     row built below).
+    // Toggles are subtle/grey when off and accent/blue when on, so the
+    // active state is obvious whichever layout renders them.
+    let (left_rail, row_1): (Option<Box<dyn Widget>>, Box<dyn Widget>) = if mobile {
+        // The button group floats over the sky as a `Stack` overlay
+        // (see lib.rs). `fit_width` keeps it as narrow as the widest
+        // button. Its only background is the small black panel hugging
+        // the buttons — the sky shows through everywhere else (above,
+        // below, and to the right).
+        let button_group = FlexColumn::new()
+            .with_gap(8.0)
+            .with_inner_padding(Insets::all(6.0))
+            // Same backing as the altitude-scale HUD on the right:
+            // pure black at alpha 110 so the two overlays read with
+            // identical see-through over the sky.
+            .with_background(Color::from_rgba8(0, 0, 0, 110))
+            .with_fit_width(true)
+            .add(geo_toggle)
+            .add(constellation_toggle)
+            .add(compass_toggle)
+            .add(Box::new(geo_button))
+            .add(Box::new(calibrate_button))
+            .add(Box::new(fullscreen_button));
+        // Wrap in a `Conditional` so a tap on empty sky (handled in
+        // SkyViewWidget) can hide / show the whole rail via
+        // `show_controls`. The LEFT + CENTER anchors live on the
+        // `Conditional` because the `Stack` overlay aligns whatever
+        // widget it's handed directly — that's the `Conditional`, not
+        // the inner column — pinning the rail flush to the left edge,
+        // vertically centred.
+        let rail = Conditional::new(Rc::clone(&show_controls), Box::new(button_group))
+            .with_h_anchor(HAnchor::LEFT)
+            .with_v_anchor(VAnchor::CENTER);
+        let readouts = WrappingRow::new()
+            .with_gap(h_gap, 6.0)
+            .add(Box::new(coord_label))
+            .add(Box::new(time_label));
+        (Some(Box::new(rail)), Box::new(readouts))
+    } else {
+        let row = WrappingRow::new()
+            .with_gap(h_gap, 6.0)
+            .add(geo_toggle)
+            .add(constellation_toggle)
+            .add(compass_toggle)
+            .add(Box::new(geo_button))
+            .add(Box::new(calibrate_button))
+            .add(Box::new(fullscreen_button))
+            .add(Box::new(coord_label))
+            .add(Box::new(time_label));
+        (None, Box::new(row))
+    };
 
     // Shared "do the search now" closure so the Search button, Enter
     // key, and live on_change all use exactly the same path. Without
@@ -389,13 +451,15 @@ pub(crate) fn build_control_panel<P: AstronomerPlatform>(
 
     let inner = FlexColumn::new()
         .with_gap(8.0)
-        .add(Box::new(row_1))
+        .add(row_1)
         .add(Box::new(row_2_conditional));
 
-    Container::new()
+    let bottom = Container::new()
         .add(Box::new(inner))
         .with_fit_height(true)
         .with_background(Color::from_rgb8(28, 28, 40))
         .with_border(Color::from_rgb8(50, 50, 70), 1.0)
-        .with_inner_padding(Insets::all(12.0))
+        .with_inner_padding(Insets::all(12.0));
+
+    ControlPanel { left_rail, bottom }
 }

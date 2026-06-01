@@ -123,6 +123,14 @@ pub struct SkyViewWidget {
 
     show_constellations: Rc<Cell<bool>>,
 
+    /// Visibility of the on-screen control chrome (the mobile left-edge
+    /// button rail). A tap on empty sky — one that hits no body and no
+    /// constellation line — toggles this so the user can clear the
+    /// overlays for an unobstructed view and tap again to bring them
+    /// back. Nothing reads it on desktop (there's no rail), so the tap
+    /// is a harmless no-op there.
+    show_controls: Rc<Cell<bool>>,
+
     /// Closure that returns the device's UTC offset in minutes east of
     /// UTC (DST-aware), supplied by the platform shell. Used to format
     /// rise / set times in the reticle card as the user's local clock,
@@ -170,6 +178,7 @@ impl SkyViewWidget {
         view_quat: Rc<Cell<UnitQuaternion<f64>>>,
         calibration_yaw: Rc<Cell<f64>>,
         show_constellations: Rc<Cell<bool>>,
+        show_controls: Rc<Cell<bool>>,
         local_offset_fn: Rc<dyn Fn() -> i32>,
         toast: crate::toast::ToastCell,
     ) -> Self {
@@ -183,6 +192,7 @@ impl SkyViewWidget {
             view_quat,
             calibration_yaw,
             show_constellations,
+            show_controls,
             local_offset_fn,
             toast,
             down: None,
@@ -457,14 +467,25 @@ impl Widget for SkyViewWidget {
                 let is_tap = !down.is_drag && elapsed < Duration::from_millis(TAP_MAX_DURATION_MS as u64);
                 if is_tap {
                     if let Some(hit) = self.hit_test_tap(*pos) {
+                        // Tap landed on a body / constellation line: pin
+                        // its info card.
                         self.selected = Some(Selection {
                             name: hit.name,
                             magnitude: hit.magnitude,
                             detail: hit.detail,
                             pos: hit.pos,
                         });
-                    } else {
+                    } else if self.selected.is_some() {
+                        // Tap on empty sky while a card is up: first tap
+                        // dismisses the card (don't also toggle the
+                        // chrome — one gesture, one effect).
                         self.selected = None;
+                    } else {
+                        // Tap on truly empty sky (between the stars):
+                        // toggle the control chrome so the user can get
+                        // an unobstructed view and tap again to restore
+                        // it.
+                        self.show_controls.set(!self.show_controls.get());
                     }
                     agg_gui::animation::request_draw();
                 }

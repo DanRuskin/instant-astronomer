@@ -41,7 +41,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use agg_gui::text::Font;
-use agg_gui::widgets::FlexColumn;
+use agg_gui::widgets::{FlexColumn, Stack};
 use agg_gui::App;
 use nalgebra::UnitQuaternion;
 
@@ -150,6 +150,11 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
     let view_quat = Rc::new(Cell::new(UnitQuaternion::<f64>::identity()));
     let calibration_yaw = Rc::new(Cell::new(0.0));
     let show_constellations = Rc::new(Cell::new(true));
+    // Visibility of the on-screen control chrome (mobile left-edge button
+    // rail). Starts visible; a tap on empty sky toggles it (handled in
+    // SkyViewWidget). Shared with the control panel, which wraps the rail
+    // in a `Conditional` watching this cell.
+    let show_controls = Rc::new(Cell::new(true));
     // Default to geolocation (the common case on phones). Unchecking
     // reveals the city search field. They never need to be on at the
     // same time — geolocation already gives the exact lat/lng.
@@ -182,6 +187,7 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
         Rc::clone(&view_quat),
         Rc::clone(&calibration_yaw),
         Rc::clone(&show_constellations),
+        Rc::clone(&show_controls),
         Rc::clone(&local_offset_fn),
         Rc::clone(&toast),
     );
@@ -196,6 +202,7 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
         Rc::clone(&view_quat),
         Rc::clone(&calibration_yaw),
         Rc::clone(&show_constellations),
+        Rc::clone(&show_controls),
         Rc::clone(&use_geolocation),
         Rc::clone(&use_device_orientation),
         Rc::clone(&search_text),
@@ -203,11 +210,21 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
         Rc::clone(&toast),
     );
 
+    // On mobile the control panel hands back a left-edge button rail.
+    // Overlay it on the sky with a `Stack` (`add_aligned` floats it at
+    // its natural size, left + vertically-centred) so the sky shows
+    // through above, below, and beside the buttons, and pointer events
+    // outside the panel still reach the sky. Desktop returns no rail.
+    let sky_area: Box<dyn agg_gui::widget::Widget> = match panel.left_rail {
+        Some(rail) => Box::new(Stack::new().add(Box::new(sky_widget)).add_aligned(rail)),
+        None => Box::new(sky_widget),
+    };
+
     let root = FlexColumn::new()
         .with_gap(0.0)
-        .add_flex(Box::new(sky_widget), 1.0)
+        .add_flex(sky_area, 1.0)
         .add(Box::new(tape_widget))
-        .add(Box::new(panel));
+        .add(Box::new(panel.bottom));
 
     (App::new(Box::new(root)), handles)
 }
