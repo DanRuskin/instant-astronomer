@@ -6,9 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "wasm": "wasm-pack build ../instant-astronomer-wasm --target web --out-dir ../demo/public/pkg --no-typescript",
+    "wasm:watch": "cargo watch -w instant-astronomer-wasm/src -w instant-astronomer-core/src -s \"wasm-pack build instant-astronomer-wasm --target web --out-dir ../demo/public/pkg --no-typescript\""
   },
   "devDependencies": {
+    "@vitejs/plugin-basic-ssl": "^1.2.0",
     "typescript": "^5.5.0",
     "vite": "^5.4.0"
   }
