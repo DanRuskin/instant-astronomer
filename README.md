@@ -75,6 +75,21 @@ On the phone, open the printed **Network** URL (e.g.
 After a Rust change, `wasm:watch` rebuilds the pkg — just reload the page on
 the phone. `bun run wasm` does a single (non-watching) build.
 
+### Sending a phone screenshot back to the dev machine
+
+When the dev server is running it also serves a small screenshot relay at
+**`/__shot`** (dev only — it's stripped from production builds). To capture
+what the phone is actually rendering:
+
+1. Take a normal OS screenshot on the phone.
+2. Open `https://<your-lan-ip>:5173/__shot` in the phone browser.
+3. Pick the screenshot and tap **Upload**.
+
+The image is saved on the dev machine under `demo/shots/` (gitignored), where
+you — or a coding agent pair-debugging the mobile layout — can open it
+directly. Implemented in
+[`demo/vite-plugins/phone-shots.ts`](demo/vite-plugins/phone-shots.ts).
+
 ## Workspace layout
 
 ```
