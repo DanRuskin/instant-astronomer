@@ -16,6 +16,7 @@
 pub mod cities;
 pub mod icons;
 pub mod math;
+pub mod search;
 pub mod stars;
 pub mod toast;
 
@@ -30,6 +31,8 @@ pub mod widgets {
 mod clock;
 mod control_panel;
 mod fusion;
+mod menu;
+mod search_panel;
 
 pub use clock::current_unix_ms;
 pub use fusion::{
@@ -151,10 +154,10 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
     let calibration_yaw = Rc::new(Cell::new(0.0));
     let show_constellations = Rc::new(Cell::new(true));
     // Visibility of the on-screen control chrome (mobile left-edge button
-    // rail). Starts visible; a tap on empty sky toggles it (handled in
-    // SkyViewWidget). Shared with the control panel, which wraps the rail
-    // in a `Conditional` watching this cell.
-    let show_controls = Rc::new(Cell::new(true));
+    // rail). Starts hidden for an unobstructed sky on load; a tap on empty
+    // sky toggles it (handled in SkyViewWidget). Shared with the control
+    // panel, which wraps the rail in a `Conditional` watching this cell.
+    let show_controls = Rc::new(Cell::new(false));
     // Default to geolocation (the common case on phones). Unchecking
     // reveals the city search field. They never need to be on at the
     // same time — geolocation already gives the exact lat/lng.
@@ -168,6 +171,18 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
     let fusion_seeded: Rc<Cell<bool>> = Rc::new(Cell::new(false));
     let search_text = Rc::new(std::cell::RefCell::new(String::new()));
     let search_status = Rc::new(std::cell::RefCell::new(String::from("Type a city to search")));
+
+    // Object-search overlay state. `search_active` toggles the top
+    // search bar; `search_target` holds the selected object the sky-view
+    // finder points at. `search_no_target` is kept as the strict inverse
+    // of `search_has_target` so the input-mode `Conditional` (which takes
+    // a single bool cell) can show/hide without a derived widget.
+    let search_active = Rc::new(Cell::new(false));
+    let search_has_target = Rc::new(Cell::new(false));
+    let search_no_target = Rc::new(Cell::new(true));
+    let search_query = Rc::new(std::cell::RefCell::new(String::new()));
+    let search_target: Rc<std::cell::RefCell<Option<crate::search::SearchTarget>>> =
+        Rc::new(std::cell::RefCell::new(None));
 
     let handles = AstronomerHandles {
         latitude: Rc::clone(&latitude),
@@ -187,9 +202,11 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
         Rc::clone(&view_quat),
         Rc::clone(&calibration_yaw),
         Rc::clone(&show_constellations),
+        Rc::clone(&use_device_orientation),
         Rc::clone(&show_controls),
         Rc::clone(&local_offset_fn),
         Rc::clone(&toast),
+        Rc::clone(&search_target),
     );
     let tape_widget = HorizonTapeWidget::new(Arc::clone(&font), Rc::clone(&view_quat));
 
@@ -207,18 +224,35 @@ pub fn build_astronomer_app<P: AstronomerPlatform>(
         Rc::clone(&use_device_orientation),
         Rc::clone(&search_text),
         Rc::clone(&search_status),
+        Rc::clone(&search_active),
+        Rc::clone(&search_query),
         Rc::clone(&toast),
     );
 
-    // On mobile the control panel hands back a left-edge button rail.
-    // Overlay it on the sky with a `Stack` (`add_aligned` floats it at
-    // its natural size, left + vertically-centred) so the sky shows
-    // through above, below, and beside the buttons, and pointer events
-    // outside the panel still reach the sky. Desktop returns no rail.
-    let sky_area: Box<dyn agg_gui::widget::Widget> = match panel.left_rail {
-        Some(rail) => Box::new(Stack::new().add(Box::new(sky_widget)).add_aligned(rail)),
-        None => Box::new(sky_widget),
-    };
+    let search_panel = crate::search_panel::build_search_panel(
+        Arc::clone(&font),
+        crate::search_panel::SearchState {
+            active: Rc::clone(&search_active),
+            has_target: Rc::clone(&search_has_target),
+            no_target: Rc::clone(&search_no_target),
+            query: Rc::clone(&search_query),
+            target: Rc::clone(&search_target),
+            timestamp_ms: Rc::clone(&timestamp_ms),
+        },
+    );
+
+    // Overlay floating chrome on the sky with a `Stack` (`add_aligned`
+    // floats each child at its natural size by its own anchor) so the sky
+    // shows through everywhere else and pointer events outside the panels
+    // still reach the sky. On mobile the control panel also hands back a
+    // left-edge button rail; desktop has none. The search bar floats at
+    // the top on both form factors.
+    let mut stack = Stack::new().add(Box::new(sky_widget));
+    if let Some(rail) = panel.left_rail {
+        stack = stack.add_aligned(rail);
+    }
+    stack = stack.add_aligned(search_panel);
+    let sky_area: Box<dyn agg_gui::widget::Widget> = Box::new(stack);
 
     let root = FlexColumn::new()
         .with_gap(0.0)

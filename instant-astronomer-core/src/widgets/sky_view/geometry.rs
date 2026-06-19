@@ -1,8 +1,43 @@
-//! 2-D screen-space geometry helpers used by `sky_view` for tap +
-//! reticle hit-testing. Pulled out of `sky_view.rs` to keep that
-//! file under the 800-line guardrail.
+//! 2-D screen-space geometry + drawing primitives used by `sky_view`.
+//! Pulled out of `sky_view.rs` to keep that file under the 800-line
+//! guardrail.
 
-use agg_gui::geometry::Point;
+use agg_gui::color::Color;
+use agg_gui::draw_ctx::DrawCtx;
+use agg_gui::geometry::{Point, Rect};
+
+/// Fill an axis-aligned rectangle.
+pub(super) fn fill_rect(ctx: &mut dyn DrawCtx, r: Rect, color: Color) {
+    ctx.set_fill_color(color);
+    ctx.begin_path();
+    ctx.rect(r.x, r.y, r.width, r.height);
+    ctx.fill();
+}
+
+/// Fill a circle (star / planet disc).
+pub(super) fn fill_disc(ctx: &mut dyn DrawCtx, p: Point, radius: f64, color: Color) {
+    ctx.set_fill_color(color);
+    ctx.begin_path();
+    ctx.circle(p.x, p.y, radius);
+    ctx.fill();
+}
+
+/// Stroke a line segment (constellation lines).
+pub(super) fn stroke_segment(ctx: &mut dyn DrawCtx, a: Point, b: Point, width: f64, color: Color) {
+    ctx.set_stroke_color(color);
+    ctx.set_line_width(width);
+    ctx.begin_path();
+    ctx.move_to(a.x, a.y);
+    ctx.line_to(b.x, b.y);
+    ctx.stroke();
+}
+
+/// Draw a single line of text at `p` (baseline) in the current font.
+pub(super) fn draw_text(ctx: &mut dyn DrawCtx, p: Point, size: f64, color: Color, text: &str) {
+    ctx.set_fill_color(color);
+    ctx.set_font_size(size);
+    ctx.fill_text(text, p.x, p.y);
+}
 
 /// Shortest distance from point `p` to the line segment `a → b`, plus
 /// the closest point on the segment. Used by `SkyViewWidget::hit_test_tap`

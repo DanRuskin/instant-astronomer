@@ -6,21 +6,28 @@
 //! it talks to the rest of the app only through the shared `Rc<Cell<_>>`
 //! state passed in by `build_astronomer_app`.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use agg_gui::color::Color;
+use agg_gui::geometry::Size;
 use agg_gui::layout_props::{HAnchor, Insets, VAnchor};
 use agg_gui::text::Font;
 use agg_gui::widget::Widget;
 use agg_gui::widgets::{Button, Checkbox, Conditional, Container, FlexColumn, FlexRow, TextField};
 use nalgebra::UnitQuaternion;
 
+/// Edge length (logical px) of every mobile icon button — the left-rail
+/// toggles, the top-bar actions, and the three-dot panel entries all use
+/// this so they render as a uniform square set.
+pub(crate) const ICON_BUTTON_PX: f64 = 32.0;
+
 use crate::clock::format_clock_label;
 use crate::fusion::view_quat_heading_rad;
 use crate::icons::{
-    load_icon_font, FA_COMPASS, FA_CROSSHAIRS, FA_EXPAND, FA_MAP_MARKER, FA_MOBILE, FA_STAR,
+    load_icon_font, FA_COMPASS, FA_CROSSHAIRS, FA_EXPAND, FA_MAP_MARKER, FA_MOBILE, FA_SEARCH,
+    FA_STAR,
 };
 use crate::widgets::status_text::StatusText;
 use crate::widgets::wrapping_row::WrappingRow;
@@ -59,6 +66,8 @@ pub(crate) fn build_control_panel<P: AstronomerPlatform>(
     use_device_orientation: Rc<Cell<bool>>,
     search_text: Rc<std::cell::RefCell<String>>,
     search_status: Rc<std::cell::RefCell<String>>,
+    search_active: Rc<Cell<bool>>,
+    search_query: Rc<RefCell<String>>,
     toast: crate::toast::ToastCell,
 ) -> ControlPanel {
     let icon_font = load_icon_font();
@@ -83,7 +92,9 @@ pub(crate) fn build_control_panel<P: AstronomerPlatform>(
                 platform.request_geolocation();
             });
         if mobile {
-            b = b.with_compact();
+            b = b
+                .with_compact()
+                .with_min_size(Size::new(ICON_BUTTON_PX, ICON_BUTTON_PX));
         }
         b
     };
@@ -111,6 +122,7 @@ pub(crate) fn build_control_panel<P: AstronomerPlatform>(
                 .with_subtle()
                 .with_active_fn(move || active_cell.get())
                 .with_compact()
+                .with_min_size(Size::new(ICON_BUTTON_PX, ICON_BUTTON_PX))
                 .on_click(move || {
                     let new_val = !click_cell.get();
                     click_cell.set(new_val);
@@ -162,6 +174,7 @@ pub(crate) fn build_control_panel<P: AstronomerPlatform>(
                 .with_subtle()
                 .with_active_fn(move || active_cell.get())
                 .with_compact()
+                .with_min_size(Size::new(ICON_BUTTON_PX, ICON_BUTTON_PX))
                 .on_click(move || {
                     let new_val = !click_cell.get();
                     click_cell.set(new_val);
@@ -209,6 +222,7 @@ pub(crate) fn build_control_panel<P: AstronomerPlatform>(
                 .with_subtle()
                 .with_active_fn(move || active_cell.get())
                 .with_compact()
+                .with_min_size(Size::new(ICON_BUTTON_PX, ICON_BUTTON_PX))
                 .on_click(move || {
                     let new_val = !click_cell.get();
                     click_cell.set(new_val);
@@ -263,7 +277,9 @@ pub(crate) fn build_control_panel<P: AstronomerPlatform>(
                 agg_gui::animation::request_draw();
             });
         if mobile {
-            b = b.with_compact();
+            b = b
+                .with_compact()
+                .with_min_size(Size::new(ICON_BUTTON_PX, ICON_BUTTON_PX));
         }
         b
     };
@@ -282,7 +298,9 @@ pub(crate) fn build_control_panel<P: AstronomerPlatform>(
                 crate::toast::show(&toast, "Toggled fullscreen");
             });
         if mobile {
-            b = b.with_compact();
+            b = b
+                .with_compact()
+                .with_min_size(Size::new(ICON_BUTTON_PX, ICON_BUTTON_PX));
         }
         b
     };
@@ -327,12 +345,23 @@ pub(crate) fn build_control_panel<P: AstronomerPlatform>(
     //     row built below).
     // Toggles are subtle/grey when off and accent/blue when on, so the
     // active state is obvious whichever layout renders them.
+    #[allow(clippy::type_complexity)]
     let (left_rail, row_1): (Option<Box<dyn Widget>>, Box<dyn Widget>) = if mobile {
-        // The button group floats over the sky as a `Stack` overlay
+        // Search at the top, three-dot "more options" at the bottom; the
+        // kebab's flyout (Locate me, Calibrate) pops out to the right of
+        // the rail, bottom-aligned with the kebab.
+        let rail_menu = crate::menu::build_rail_menu(
+            Arc::clone(&font),
+            Arc::clone(&icon_font),
+            vec![Box::new(geo_button), Box::new(calibrate_button)],
+            Rc::clone(&search_active),
+            Rc::clone(&search_query),
+        );
+
+        // The button column floats over the sky as a `Stack` overlay
         // (see lib.rs). `fit_width` keeps it as narrow as the widest
         // button. Its only background is the small black panel hugging
-        // the buttons — the sky shows through everywhere else (above,
-        // below, and to the right).
+        // the buttons — the sky shows through everywhere else.
         let button_group = FlexColumn::new()
             .with_gap(8.0)
             .with_inner_padding(Insets::all(6.0))
@@ -341,20 +370,30 @@ pub(crate) fn build_control_panel<P: AstronomerPlatform>(
             // identical see-through over the sky.
             .with_background(Color::from_rgba8(0, 0, 0, 110))
             .with_fit_width(true)
-            .add(geo_toggle)
+            // `geo_toggle` is intentionally not added here (hidden from the
+            // mobile rail for now; the JS shell auto-requests geolocation on
+            // page load). The manual "Locate me" button (`geo_button`) and
+            // "Calibrate" now live in the three-dot flyout below.
+            .add(rail_menu.search_button)
             .add(constellation_toggle)
             .add(compass_toggle)
-            .add(Box::new(geo_button))
-            .add(Box::new(calibrate_button))
-            .add(Box::new(fullscreen_button));
+            .add(Box::new(fullscreen_button))
+            .add(rail_menu.menu_button);
+        // Pair the button column with the kebab flyout in a content-fit row
+        // so the flyout floats to the column's right without resizing it —
+        // opening the flyout never shifts the centred rail.
+        let rail_row = FlexRow::new()
+            .with_gap(8.0)
+            .with_fit_width(true)
+            .add(Box::new(button_group))
+            .add(rail_menu.flyout);
         // Wrap in a `Conditional` so a tap on empty sky (handled in
         // SkyViewWidget) can hide / show the whole rail via
         // `show_controls`. The LEFT + CENTER anchors live on the
         // `Conditional` because the `Stack` overlay aligns whatever
-        // widget it's handed directly — that's the `Conditional`, not
-        // the inner column — pinning the rail flush to the left edge,
-        // vertically centred.
-        let rail = Conditional::new(Rc::clone(&show_controls), Box::new(button_group))
+        // widget it's handed directly, pinning the rail flush to the left
+        // edge, vertically centred.
+        let rail = Conditional::new(Rc::clone(&show_controls), Box::new(rail_row))
             .with_h_anchor(HAnchor::LEFT)
             .with_v_anchor(VAnchor::CENTER);
         let readouts = WrappingRow::new()
@@ -363,6 +402,19 @@ pub(crate) fn build_control_panel<P: AstronomerPlatform>(
             .add(Box::new(time_label));
         (Some(Box::new(rail)), Box::new(readouts))
     } else {
+        // Desktop entry point for object search. Labelled "Find" to
+        // distinguish it from the city-location "Search" field below.
+        let find_button = {
+            let active = Rc::clone(&search_active);
+            let query = Rc::clone(&search_query);
+            Button::new("Find", Arc::clone(&font))
+                .with_icon(FA_SEARCH, Arc::clone(&icon_font))
+                .on_click(move || {
+                    query.borrow_mut().clear();
+                    active.set(true);
+                    agg_gui::animation::request_draw();
+                })
+        };
         let row = WrappingRow::new()
             .with_gap(h_gap, 6.0)
             .add(geo_toggle)
@@ -370,6 +422,7 @@ pub(crate) fn build_control_panel<P: AstronomerPlatform>(
             .add(compass_toggle)
             .add(Box::new(geo_button))
             .add(Box::new(calibrate_button))
+            .add(Box::new(find_button))
             .add(Box::new(fullscreen_button))
             .add(Box::new(coord_label))
             .add(Box::new(time_label));
