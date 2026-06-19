@@ -16,8 +16,9 @@
 mod geometry;
 mod hud;
 mod moon_phase;
+mod target_finder;
 
-use geometry::point_to_segment_distance;
+use geometry::{draw_text, fill_disc, fill_rect, point_to_segment_distance, stroke_segment};
 
 use crate::math::{
     equatorial_to_horizontal, format_rise_set, horizontal_to_cartesian, rise_set_times,
@@ -123,6 +124,14 @@ pub struct SkyViewWidget {
 
     show_constellations: Rc<Cell<bool>>,
 
+    /// Whether the device-orientation (compass) channel is driving the
+    /// view. When `true` the phone's sensors aim the camera, so a tap is
+    /// no longer a pointing gesture — we suppress the tap-to-identify
+    /// info card to avoid surprise cards popping up as the user pans the
+    /// sky by physically turning. When `false` (desktop / compass off)
+    /// tapping resolves the nearest body and shows its info card.
+    use_device_orientation: Rc<Cell<bool>>,
+
     /// Visibility of the on-screen control chrome (the mobile left-edge
     /// button rail). A tap on empty sky — one that hits no body and no
     /// constellation line — toggles this so the user can clear the
@@ -156,6 +165,9 @@ pub struct SkyViewWidget {
     painted_lines: RefCell<Vec<PaintedSegment>>,
     /// Body the user most recently tapped on. Renders as an info card.
     selected: Option<Selection>,
+    /// Active search target (set by the search panel). When `Some`, the
+    /// finder overlay points the user toward it. See `target_finder`.
+    search_target: Rc<RefCell<Option<crate::search::SearchTarget>>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -178,9 +190,11 @@ impl SkyViewWidget {
         view_quat: Rc<Cell<UnitQuaternion<f64>>>,
         calibration_yaw: Rc<Cell<f64>>,
         show_constellations: Rc<Cell<bool>>,
+        use_device_orientation: Rc<Cell<bool>>,
         show_controls: Rc<Cell<bool>>,
         local_offset_fn: Rc<dyn Fn() -> i32>,
         toast: crate::toast::ToastCell,
+        search_target: Rc<RefCell<Option<crate::search::SearchTarget>>>,
     ) -> Self {
         Self {
             bounds: Rect::default(),
@@ -192,6 +206,7 @@ impl SkyViewWidget {
             view_quat,
             calibration_yaw,
             show_constellations,
+            use_device_orientation,
             show_controls,
             local_offset_fn,
             toast,
@@ -199,6 +214,7 @@ impl SkyViewWidget {
             painted_bodies: RefCell::new(Vec::new()),
             painted_lines: RefCell::new(Vec::new()),
             selected: None,
+            search_target,
         }
     }
 
@@ -309,34 +325,6 @@ impl SkyViewWidget {
         ))
     }
 
-    fn fill_rect(ctx: &mut dyn DrawCtx, r: Rect, color: Color) {
-        ctx.set_fill_color(color);
-        ctx.begin_path();
-        ctx.rect(r.x, r.y, r.width, r.height);
-        ctx.fill();
-    }
-
-    fn fill_disc(ctx: &mut dyn DrawCtx, p: Point, radius: f64, color: Color) {
-        ctx.set_fill_color(color);
-        ctx.begin_path();
-        ctx.circle(p.x, p.y, radius);
-        ctx.fill();
-    }
-
-    fn stroke_segment(ctx: &mut dyn DrawCtx, a: Point, b: Point, width: f64, color: Color) {
-        ctx.set_stroke_color(color);
-        ctx.set_line_width(width);
-        ctx.begin_path();
-        ctx.move_to(a.x, a.y);
-        ctx.line_to(b.x, b.y);
-        ctx.stroke();
-    }
-
-    fn draw_text(ctx: &mut dyn DrawCtx, p: Point, size: f64, color: Color, text: &str) {
-        ctx.set_fill_color(color);
-        ctx.set_font_size(size);
-        ctx.fill_text(text, p.x, p.y);
-    }
 }
 
 
@@ -466,7 +454,15 @@ impl Widget for SkyViewWidget {
                 let elapsed = down.started_at.elapsed();
                 let is_tap = !down.is_drag && elapsed < Duration::from_millis(TAP_MAX_DURATION_MS as u64);
                 if is_tap {
-                    if let Some(hit) = self.hit_test_tap(*pos) {
+                    // With the compass driving the view, the user aims by
+                    // physically turning the phone, so taps are not a
+                    // pointing gesture — skip tap-to-identify and treat
+                    // every tap as a chrome toggle / card dismiss. When
+                    // the compass is off, tapping resolves the nearest
+                    // body and shows its info card.
+                    let compass_on = self.use_device_orientation.get();
+                    let hit = if compass_on { None } else { self.hit_test_tap(*pos) };
+                    if let Some(hit) = hit {
                         // Tap landed on a body / constellation line: pin
                         // its info card.
                         self.selected = Some(Selection {
@@ -506,7 +502,7 @@ impl Widget for SkyViewWidget {
         let mut painted_lines: Vec<PaintedSegment> = Vec::new();
 
         // Night-sky backdrop (deep indigo).
-        Self::fill_rect(ctx, Rect::new(0.0, 0.0, w, h), Color::from_rgb8(10, 10, 25));
+        fill_rect(ctx, Rect::new(0.0, 0.0, w, h), Color::from_rgb8(10, 10, 25));
 
         let center = Point::new(w / 2.0, h * 0.6);
         let focal_length = (w.min(h)) * 0.9;
@@ -549,7 +545,7 @@ impl Widget for SkyViewWidget {
                         self.project_horizontal(h_from, &rot, center, focal_length),
                         self.project_horizontal(h_to, &rot, center, focal_length),
                     ) {
-                        Self::stroke_segment(ctx, p_from, p_to, 1.0, line_color);
+                        stroke_segment(ctx, p_from, p_to, 1.0, line_color);
                         painted_lines.push(PaintedSegment {
                             constellation_name: line.constellation_name,
                             p0: p_from,
@@ -586,10 +582,10 @@ impl Widget for SkyViewWidget {
             } else {
                 Color::from_rgb8(255, 255, 255)
             };
-            Self::fill_disc(ctx, pos, radius, color);
+            fill_disc(ctx, pos, radius, color);
 
             if star.magnitude < 1.0 {
-                Self::draw_text(
+                draw_text(
                     ctx,
                     Point::new(pos.x + radius + 3.0, pos.y - 3.0),
                     9.0,
@@ -651,11 +647,11 @@ impl Widget for SkyViewWidget {
             };
             // Soft glow halo for the bodies that deserve to "pop".
             if body.name == "Sun" {
-                Self::fill_disc(ctx, pos, radius + 6.0, Color::from_rgba8(255, 200, 50, 60));
+                fill_disc(ctx, pos, radius + 6.0, Color::from_rgba8(255, 200, 50, 60));
             } else if body.name == "Moon" {
-                Self::fill_disc(ctx, pos, radius + 3.0, Color::from_rgba8(220, 220, 240, 50));
+                fill_disc(ctx, pos, radius + 3.0, Color::from_rgba8(220, 220, 240, 50));
             } else if body.name == "Venus" || body.name == "Jupiter" {
-                Self::fill_disc(ctx, pos, radius + 3.0, Color::from_rgba8(255, 240, 200, 60));
+                fill_disc(ctx, pos, radius + 3.0, Color::from_rgba8(255, 240, 200, 60));
             }
 
             // The Moon gets a phase rendering; everything else is a
@@ -666,9 +662,9 @@ impl Widget for SkyViewWidget {
                 });
                 moon_phase::fill_moon_phase(ctx, pos, radius, phase_info);
             } else {
-                Self::fill_disc(ctx, pos, radius, body.color);
+                fill_disc(ctx, pos, radius, body.color);
             }
-            Self::draw_text(
+            draw_text(
                 ctx,
                 Point::new(pos.x + radius + 4.0, pos.y - 4.0),
                 12.0,
@@ -773,6 +769,21 @@ impl Widget for SkyViewWidget {
         // Promote this frame's projections to the cache for the next tap.
         self.painted_bodies.replace(painted);
         self.painted_lines.replace(painted_lines);
+
+        // Search finder overlay — arrow / ring / distance toward the
+        // active search target, if any.
+        target_finder::paint(
+            ctx,
+            w,
+            h,
+            &rot,
+            center,
+            focal_length,
+            &self.search_target,
+            lat,
+            lst,
+            now_ms,
+        );
 
         // Toast on top of everything — feedback for icon-only mobile
         // taps. `now_ms` is the projection clock, which the WASM

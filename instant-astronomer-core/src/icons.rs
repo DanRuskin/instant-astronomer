@@ -51,3 +51,19 @@ pub const FA_MOBILE: char = '\u{f10b}';
 /// Map marker — used for the "Use geolocation" toggle on mobile so
 /// the row stays icon-only.
 pub const FA_MAP_MARKER: char = '\u{f041}';
+
+/// Magnifying glass — used for the top-menu "Search" action. FA 5 Free
+/// Solid; present in the bundled face.
+pub const FA_SEARCH: char = '\u{f002}';
+
+/// Vertical three-dot "kebab" — used for the top-menu "more options"
+/// button that opens the lesser-used-options panel. FA 5 Free Solid.
+pub const FA_ELLIPSIS_V: char = '\u{f142}';
+
+/// Times / "x" — used for the search overlay's close button. FA 5 Free
+/// Solid.
+pub const FA_TIMES: char = '\u{f00d}';
+
+/// Left arrow — used for the search overlay's "back to results" button.
+/// FA 5 Free Solid.
+pub const FA_ARROW_LEFT: char = '\u{f060}';
